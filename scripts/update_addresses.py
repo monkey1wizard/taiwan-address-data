@@ -510,6 +510,13 @@ def run(cfg: CountyConfig) -> None:
     note = f" ({collisions} sanitized-name merges)" if collisions else ""
     print(f"Done. {cfg.name}: {len(by_file)} road files, {total:,} records{note}.")
 
+    print("Rebuilding road.csv index…")
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "build_road_index", Path(__file__).parent / "build_road_index.py")
+    _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+    _mod.build()
+
 
 def main():
     ap = argparse.ArgumentParser(description="Update Taiwan county door-plate map data")
