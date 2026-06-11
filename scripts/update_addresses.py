@@ -51,7 +51,7 @@ class CountyConfig:
     code: str            # 65  (road-file prefix and COUNTY column)
     dataset_id: int | None  # data.gov.tw id; None when using url/page_url instead
     # canonical field -> source CSV header name
-    columns: dict
+    columns: dict[str, str]
     domain: str = "data.gov.tw"   # primary; falls back to data.nat.gov.tw
     town_scheme: str = "auto"     # "auto"=detect by code length, "x10", "name"
     epsg: str = "EPSG:3826"       # source coordinate system
@@ -70,7 +70,7 @@ _ZH = dict(town="鄉鎮市區代碼", village="村里", nei="鄰", street="街�
            lane="巷", alley="弄", number="號", x="橫座標", y="縱座標")
 
 
-def _zh(**kw) -> dict:
+def _zh(**kw) -> dict[str, str]:
     """_ZH template with column-name overrides."""
     return {**_ZH, **kw}
 
@@ -320,6 +320,7 @@ def resolve_sources(cfg: CountyConfig, s) -> list[str]:
         return [cfg.url]
     if cfg.page_url:
         from urllib.parse import urljoin
+        assert cfg.page_re is not None, "page_re required when page_url is set"
         r = s.get(cfg.page_url, timeout=30)
         r.raise_for_status()
         hits = re.findall(cfg.page_re, r.text)
@@ -449,7 +450,7 @@ def run(cfg: CountyConfig) -> None:
 
             if cfg.addr_col:
                 road, section, lane, alley, number = parse_address(
-                    row.get(cfg.addr_col))
+                    row.get(cfg.addr_col) or "")
             else:
                 road, section = split_section((row.get(col["street"]) or "").strip())
                 lane = normalize(row.get(col["lane"]))

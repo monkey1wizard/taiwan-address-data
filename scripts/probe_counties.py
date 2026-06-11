@@ -9,9 +9,9 @@ import json
 import sys
 from pathlib import Path
 
-import importlib.util as _ilu
-_spec = _ilu.spec_from_file_location("u", Path(__file__).parent / "update_addresses.py")
-u = _ilu.module_from_spec(_spec); _spec.loader.exec_module(u)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from update_addresses import _session  # noqa: E402
 
 COORD_HINTS = ["座標", "坐標", "經度", "緯度", "TWD", "WGS", "x_", "y_", "橫", "縱",
                "雙重", "coordinate", "X", "Y"]
@@ -74,7 +74,7 @@ def summarize(res):
 
 
 def main():
-    s = u._session()
+    s = _session()
     rows = []
     for name, did in IDS.items():
         try:
