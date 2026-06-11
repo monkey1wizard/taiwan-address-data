@@ -363,6 +363,7 @@ def read_xlsx_rows(raw: bytes) -> list[dict]:
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     ws = wb.active
+    assert ws is not None, "openpyxl: workbook has no active sheet"
     it = ws.iter_rows(values_only=True)
     header = [str(c).strip() if c is not None else "" for c in next(it)]
     rows = []
@@ -512,11 +513,10 @@ def run(cfg: CountyConfig) -> None:
     print(f"Done. {cfg.name}: {len(by_file)} road files, {total:,} records{note}.")
 
     print("Rebuilding road.csv index…")
-    import importlib.util as _ilu
-    _spec = _ilu.spec_from_file_location(
-        "build_road_index", Path(__file__).parent / "build_road_index.py")
-    _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
-    _mod.build()
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from build_road_index import build as _rebuild_index
+    _rebuild_index()
 
 
 def main():
