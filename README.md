@@ -14,9 +14,41 @@
 
 > 早期版本的台中市等資料來自 [TGOS](https://tgos.nat.gov.tw/)。
 
+## 目錄結構
+
+```
+taiwan-address-lookup/
+├── address.html / address.js   # 前端查詢介面（直接開啟 address.html 即可使用）
+├── area_custom.csv             # 最高優先：人工補丁（2 列）
+├── area_2026.csv               # 2026 年行政區快照（新增村里 / 改制鄉鎮名）
+├── area_2014.csv               # 2014 年行政區快照（ROC 2014 行政區改制後）
+├── area_2010.csv               # 舊名對照（供解析含舊縣市名的歷史地址）
+├── area_1984.csv               # 更早舊名對照
+├── road.csv                    # 路名索引（縣市代碼 ↔ 路名，由 build_road_index.py 產生）
+├── roads/                      # 門牌座標資料，一檔一路：{縣市代碼}-{路名}.csv
+└── scripts/
+    ├── update_addresses.py     # 主更新器：下載各縣市門牌資料並重建 roads/
+    ├── build_road_index.py     # 從 roads/ 重建 road.csv 索引
+    ├── build_area_2026.py      # 從 roads/ 提取新行政區映射，產生 area_2026.csv
+    └── probe_counties.py       # 工具：探查 data.gov.tw 各縣市資料集
+```
+
+### area\_\*.csv 疊層機制
+
+`address.js` 載入多個 area CSV，優先序為：**custom > 2026 > 2014 > 2010 > 1984**。
+後面的年份不會被刪除，目的是讓含舊行政區名（如「臺北縣板橋市」）的歷史地址仍能解析。每次有新縣市改制或新增村里時，只需新增一個年份層，不修改舊檔。
+
+### road.csv 索引
+
+`road.csv` 是 `address.js` 在讀取 `roads/{縣市代碼}-{路名}.csv` 之前的路名查詢索引。更新 `roads/` 後必須同步更新此索引；`update_addresses.py` 在每次縣市更新後會自動呼叫 `build_road_index.py`。若要單獨重建：
+
+```bash
+python scripts/build_road_index.py
+```
+
 ## 資料更新工具
 
-`update_addresses.py` 是設定驅動（config-driven）的多縣市門牌更新器：自動下載指定縣市的門牌座標資料集、轉換座標、拆解路段，並重建 `roads/` 下該縣市的所有 CSV。
+`scripts/update_addresses.py` 是設定驅動（config-driven）的多縣市門牌更新器：自動下載指定縣市的門牌座標資料集、轉換座標、拆解路段，並重建 `roads/` 下該縣市的所有 CSV，完成後自動同步 `road.csv` 索引。
 
 ```bash
 pip install requests pyproj openpyxl   # openpyxl 僅 XLSX-only 縣市需要
