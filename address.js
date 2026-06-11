@@ -26,7 +26,7 @@ var get_area_data = function(argument, callback){
     area_name_map = {};
     area_max_length = 0;
     // https://sheethub.com/area.reference.tw/中華民國行政區_map_名稱2014?format=csv
-    area_versions = ['custom', '2026', '2014', '2010', '1984'];
+    area_versions = ['custom', '2015', '2014', '2010', '1984'];
     area_data = {};
     versions_loaded = 0;
     area_versions.map(function(version){

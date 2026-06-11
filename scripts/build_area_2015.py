@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build area_2026.csv from the current roads/ data.
+"""Build area_2015.csv from the current roads/ data.
 
 area_*.csv files are layered lookup tables used by address.js to resolve
 address prefixes (county/district/village names) to DGBAS codes. Newer
-layers take priority: custom > 2026 > 2014 > 2010 > 1984.
+layers take priority: custom > 2015 > 2014 > 2010 > 1984.
 
 This script extracts every unique (display-name → DGBAS code) mapping
 present in the current roads/ CSVs, then writes only the entries that are
@@ -19,7 +19,7 @@ District rows have a 7-digit dgbas_id; village rows have an 11-char id
 (7-digit town code + "-" + 3-digit village sequence).
 
 Usage:
-    python scripts/build_area_2026.py [--dry-run]
+    python scripts/build_area_2015.py [--dry-run]
 """
 
 import argparse
@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ROADS_DIR = ROOT / "roads"
 AREA_2014 = ROOT / "area_2014.csv"
-AREA_2026 = ROOT / "area_2026.csv"
+AREA_2026 = ROOT / "area_2015.csv"
 
 # Maps county code prefix → county display name (must match update_addresses.py)
 COUNTY_NAMES = {
@@ -115,7 +115,7 @@ def extract_from_roads() -> dict[str, str]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build area_2026.csv from roads/ data")
+    ap = argparse.ArgumentParser(description="Build area_2015.csv from roads/ data")
     ap.add_argument("--dry-run", action="store_true",
                     help="print new entries without writing")
     args = ap.parse_args()
@@ -151,7 +151,7 @@ def main() -> None:
             print(f"  … and {len(all_new)-40} more")
         return
 
-    # Load existing area_2026 to merge (avoid duplicates on re-run)
+    # Load existing area_2015 to merge (avoid duplicates on re-run)
     existing_2026 = load_existing(AREA_2026)
     merged = {**existing_2026, **{n: c for n, c in all_new}}
     rows = sorted(merged.items(), key=lambda x: x[0])
@@ -161,7 +161,7 @@ def main() -> None:
         w.writerow(["name", "dgbas_id"])
         w.writerows(rows)
 
-    print(f"Written {len(rows):,} entries to area_2026.csv")
+    print(f"Written {len(rows):,} entries to area_2015.csv")
 
 
 if __name__ == "__main__":
