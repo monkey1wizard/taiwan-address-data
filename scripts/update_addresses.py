@@ -29,7 +29,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 ROADS_DIR = ROOT / "roads"
 AREA_CSV = ROOT / "area_2014.csv"
 
