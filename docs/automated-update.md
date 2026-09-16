@@ -13,6 +13,8 @@
 只重跑真的有更新的縣市，把結果 commit + push 回 `main`。push 衝突會自動重試，另外有一支
 獨立的保活 workflow 防止 GitHub 因為 repo 太久沒動靜而停用排程，**日常運作不需要任何人工
 介入**。Actions 頁面的 `workflow_dispatch` 只保留給部署後的第一次驗證、或事後想手動補跑時用。
+每次執行（不管是排程、手動、dry-run 還是真的跑）都會開一個 GitHub Issue 記錄本次摘要，
+立刻關閉。GitHub 會依你帳號的通知設定，把這個 Issue 寄信到你 GitHub 上的信箱。
 
 ## 1. 觸發方式
 
@@ -29,8 +31,9 @@ UTC offset。
 | 項目 | 設定 | 說明 |
 | --- | --- | --- |
 | `permissions.contents` | `write` | 要 push 回**同一個** repo，用內建 `GITHUB_TOKEN` 就夠，不需要另外申請 PAT |
+| `permissions.issues` | `write` | 給每次執行摘要開／關 Issue 用，藉此觸發 GitHub 的信件通知，同樣用內建 `GITHUB_TOKEN` |
 | git 身分 | `github-actions[bot]` | commit 的 author，不代表任何真人帳號 |
-| 其他 `secrets` | 無 | 資料來源（data.gov.tw / data.nat.gov.tw）都是公開 API，不需要金鑰 |
+| 其他 `secrets` | 無 | 資料來源（data.gov.tw / data.nat.gov.tw）都是公開 API；通知也是借 GitHub 自己的 Issue 通知機制，不寄外部 SMTP，不需要金鑰 |
 
 ## 3. 整體流程
 
@@ -46,8 +49,8 @@ UTC offset。
 [ setup-python + pip install requests pyproj openpyxl ]
   │
   ▼
-[ python scripts/update_addresses.py --updated-only --dry-run ]  @counties_needing_update()
-  │  印出「這次會跑哪些縣市、為什麼」，方便看 log 除錯，不影響後續步驟
+[ python scripts/update_addresses.py --updated-only --dry-run | tee selection.txt ]  @counties_needing_update()
+  │  印出「這次會跑哪些縣市、為什麼」，同時存成 selection.txt 供最後寄信摘要引用
   ▼
 { workflow_dispatch 的 dry_run input == true？ }
   ├── 是 ──▶ (end >>|) 只看 log，不下載不寫檔，job 結束
@@ -82,10 +85,14 @@ UTC offset。
   │
   否
   ▼
+[ 開一個 Issue 記錄本次摘要（模式／updater 結果／有沒有 push／selection.txt 內容），
+  立刻關閉 ]  @if: always()，不管前面任何步驟成功失敗都會跑到這一步
+  │  GitHub 依你帳號的通知設定，把這個 Issue 的建立寄信到你 GitHub 上的信箱
+  ▼
 { 上一步 updater 的 exit code 是失敗？ }
-  ├── 否 ──▶ (end √) 全部縣市成功，commit 已推上去，job 綠燈
-  └── 是 ──▶ (end ×) 已成功的縣市照樣推上去了，但 job 故意標記失敗（紅燈），
-              提醒要去 log 找是哪個縣市出包
+  ├── 否 ──▶ (end √) 全部縣市成功，commit 已推上去，摘要信已寄，job 綠燈
+  └── 是 ──▶ (end ×) 已成功的縣市照樣推上去了、摘要信也已經寄出，但 job 故意標記
+              失敗（紅燈），提醒要去 log（或剛收到的信）找是哪個縣市出包
 ```
 
 對照 `scripts/update_addresses.py` 目前的設計：`--updated-only` 內部已經把「單一縣市失敗」
@@ -111,6 +118,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: monthly-update
@@ -129,7 +137,7 @@ jobs:
       - run: pip install requests pyproj openpyxl
 
       - name: Dry-run selection (always logged)
-        run: python scripts/update_addresses.py --updated-only --dry-run
+        run: python scripts/update_addresses.py --updated-only --dry-run | tee selection.txt
 
       - name: Run updater
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -165,10 +173,39 @@ jobs:
           echo "::error::push still failing after 3 attempts — needs manual conflict resolution"
           exit 1
 
+      - name: Notify by email (via a GitHub Issue, opened + closed each run)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.event.inputs.dry_run == 'true' && 'dry-run' || 'full run' }}
+          UPDATE_OUTCOME: ${{ steps.run_update.outcome }}
+          PUSHED: ${{ steps.diff.outputs.changed }}
+        run: |
+          {
+            echo "模式: $MODE"
+            echo "updater 執行結果: ${UPDATE_OUTCOME:-(dry-run 跳過)}"
+            echo "是否有 commit 推送: ${PUSHED:-n/a}"
+            echo
+            echo "### 本次選中的縣市"
+            echo '```'
+            cat selection.txt 2>/dev/null || echo "(無法讀取 selection.txt)"
+            echo '```'
+          } > issue_body.md
+          number=$(gh issue create \
+            --title "monthly-update 執行摘要 $(date -u +%Y-%m-%d)（$MODE）" \
+            --body-file issue_body.md \
+            | grep -oE '[0-9]+$')
+          gh issue close "$number"
+
       - name: Fail the job if the updater reported per-county errors
         if: ${{ github.event.inputs.dry_run != 'true' && steps.run_update.outcome == 'failure' }}
         run: exit 1
 ```
+
+`if: always()` 讓這一步不管前面任何步驟成功、失敗、還是被跳過都會執行，才能保證「每次都寄」；
+它用 `gh issue create` + `gh issue close` 借 GitHub 自己的 Issue 通知機制寄信，不需要另外設定
+SMTP 帳密、也不需要存金鑰。**前提是你 GitHub 帳號的 Settings → Notifications 裡，Issues 的
+Email 通知要是開著的**——這份文件假設它是預設開啟，沒有另外去停用過。
 
 ## 5. 保活 workflow（防止 60 天自動停用）
 
@@ -216,6 +253,8 @@ jobs:
 | `Commit and push` 最終還是紅色（3 次都失敗） | 該步驟 log 的 `::error::` 那行 | 這是文件裡唯一還需要人工處理的情況——代表 rebase 本身有真正的內容衝突（例如剛好有人手動改了同一批 `roads/*.csv`），需要人判斷怎麼合併，再用 `workflow_dispatch` 重跑 |
 | 整個 job 每月都選到同一批縣市，從沒變過 | `Dry-run selection` 的 log | 檢查 `update_log.csv` 有沒有被正常 commit 更新到（如果這個檔案沒跟著資料一起進版，下次比對基準就不會動，永遠判定「有更新」） |
 | `keepalive` workflow 突然出現一筆 commit | `.github/.github_liveness.txt` 的 commit 訊息 | 正常現象，代表已經連續一段時間沒有縣市資料更新，保活 workflow 補了一個活動標記，不代表 `monthly-update.yml` 有問題 |
+| Actions log 顯示 `Notify by email` 是綠色，但收不到信 | GitHub 帳號 Settings → Notifications | 檢查「Issues」那一列的 Email 通知有沒有被關掉；Issue 本身有沒有建立成功可以直接去 repo 的 Issues 分頁（含已關閉的）確認 |
+| repo 的 Issues 分頁被每月一筆摘要塞滿 | — | 預期行為，每次執行都會開一個、立刻關閉；想清掉可以到 Issues 分頁按標題排序批次關閉／刪除，不影響 workflow 運作 |
 
 ## 7. 已知限制
 
@@ -232,8 +271,10 @@ jobs:
 2. 至 Actions 頁籤手動打勾 `Run workflow`、`dry_run`，測 `monthly-update.yml`。
 3. 觀看 log 的 `Dry-run selection` 那一步，逐一核對印出來的縣市／理由是否合理
    （比對 `update_log.csv` 目前的 `last_updated`）。
-4. 沒問題後，再手動 `Run workflow` 一次、`dry_run` 不打勾，確認 commit 真的推上 `main`，
-   且訊息、檔案範圍符合預期。
-5. `keepalive.yml` 不用手動驗證內容——預設 41 天內都不會寫入，只要確認它有出現在
+4. 確認這次有收到 GitHub 寄來的摘要信（或至少 repo 的 Issues 分頁裡有一筆剛建立又關閉
+   的 issue）；沒收到信就照 §6 那一列排查通知設定。
+5. 沒問題後，再手動 `Run workflow` 一次、`dry_run` 不打勾，確認 commit 真的推上 `main`，
+   且訊息、檔案範圍符合預期，同時又收到一封摘要信。
+6. `keepalive.yml` 不用手動驗證內容——預設 41 天內都不會寫入，只要確認它有出現在
    Actions 頁籤、且沒有紅燈即可。
-6. 之後就交給兩支排程各自運作；有異常回來查 §6。
+7. 之後就交給兩支排程各自運作；有異常回來查 §6。

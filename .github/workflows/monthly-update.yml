@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: monthly-update
@@ -31,7 +32,7 @@ jobs:
       - run: pip install requests pyproj openpyxl
 
       - name: Dry-run selection (always logged)
-        run: python scripts/update_addresses.py --updated-only --dry-run
+        run: python scripts/update_addresses.py --updated-only --dry-run | tee selection.txt
 
       - name: Run updater
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -66,6 +67,30 @@ jobs:
           done
           echo "::error::push still failing after 3 attempts — needs manual conflict resolution"
           exit 1
+
+      - name: Notify by email (via a GitHub Issue, opened + closed each run)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.event.inputs.dry_run == 'true' && 'dry-run' || 'full run' }}
+          UPDATE_OUTCOME: ${{ steps.run_update.outcome }}
+          PUSHED: ${{ steps.diff.outputs.changed }}
+        run: |
+          {
+            echo "模式: $MODE"
+            echo "updater 執行結果: ${UPDATE_OUTCOME:-(dry-run 跳過)}"
+            echo "是否有 commit 推送: ${PUSHED:-n/a}"
+            echo
+            echo "### 本次選中的縣市"
+            echo '```'
+            cat selection.txt 2>/dev/null || echo "(無法讀取 selection.txt)"
+            echo '```'
+          } > issue_body.md
+          number=$(gh issue create \
+            --title "monthly-update 執行摘要 $(date -u +%Y-%m-%d)（$MODE）" \
+            --body-file issue_body.md \
+            | grep -oE '[0-9]+$')
+          gh issue close "$number"
 
       - name: Fail the job if the updater reported per-county errors
         if: ${{ github.event.inputs.dry_run != 'true' && steps.run_update.outcome == 'failure' }}
