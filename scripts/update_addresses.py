@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import csv
+import datetime
 import io
 import re
 import ssl
@@ -320,6 +321,75 @@ def _dist_sort_key(d: dict) -> tuple[int, int]:
     return (0, 0)
 
 
+# ── Update-log freshness (drives --updated-only) ────────────────────────────────
+
+def _read_update_log() -> dict[str, dict[str, str]]:
+    """Read update_log.csv into {code: row_dict}. Missing or malformed file ->
+    {} (treated the same as "no baseline yet" by callers)."""
+    log = ROOT / "update_log.csv"
+    if not log.exists():
+        return {}
+    try:
+        with open(log, encoding="utf-8-sig", newline="") as fh:
+            return {r["code"]: r for r in csv.DictReader(fh) if r.get("code")}
+    except (csv.Error, KeyError, OSError):
+        return {}
+
+
+def _probe_modified_date(cfg: CountyConfig, s) -> str | None:
+    """Return the dataset's modifiedDate as YYYY-MM-DD (truncated to match
+    update_log.csv's last_updated format — the raw API field is a longer ISO
+    timestamp, and comparing it against a date-only string un-truncated would
+    make it compare as "always newer"). None if cfg has no dataset_id, or the
+    probe fails on every domain."""
+    if not cfg.dataset_id:
+        return None
+    domains = [cfg.domain] + [d for d in ("data.gov.tw", "data.nat.gov.tw")
+                               if d != cfg.domain]
+    for dom in domains:
+        try:
+            r = s.get(f"https://{dom}/api/v2/rest/dataset/{cfg.dataset_id}",
+                      timeout=30)
+            if r.status_code == 200 and r.text.strip().startswith("{"):
+                res = r.json().get("result")
+                modified = (res or {}).get("modifiedDate")
+                if modified:
+                    return str(modified)[:10]
+        except Exception:
+            continue
+    return None
+
+
+def counties_needing_update(s) -> list[tuple[str, str]]:
+    """Return [(county_name, reason)] for counties whose source looks newer
+    than their update_log.csv stamp. `reason` distinguishes *why* a county was
+    selected, so a maintainer skimming cron/dry-run output can tell an
+    expected inclusion from a silently-broken probe:
+      "new"              - not in update_log.csv yet (first run for this county)
+      "updated"          - modifiedDate is newer than last_updated
+      "no-freshness-api" - cfg has no dataset_id to probe (e.g. 基隆市) — expected,
+                           always included since freshness can't be checked
+      "probe-failed"     - dataset_id exists but the API call/parse failed —
+                           included conservatively, but worth investigating if
+                           it recurs every run for the same county
+    A county already up to date (modifiedDate <= last_updated) is omitted."""
+    log_rows = _read_update_log()
+    selected: list[tuple[str, str]] = []
+    for name, cfg in COUNTIES.items():
+        last_updated = log_rows.get(cfg.code, {}).get("last_updated")
+        if not cfg.dataset_id:
+            selected.append((name, "no-freshness-api"))
+            continue
+        modified = _probe_modified_date(cfg, s)
+        if modified is None:
+            selected.append((name, "probe-failed"))
+        elif last_updated is None:
+            selected.append((name, "new"))
+        elif modified > last_updated:
+            selected.append((name, "updated"))
+    return selected
+
+
 def get_download_urls(cfg: CountyConfig, s) -> list[str]:
     """Resolve all download URLs matching cfg.fmt from the data.gov.tw API.
     Returns a list (a dataset may publish several parts, e.g. 雲林 XLSX)."""
@@ -599,13 +669,8 @@ def run(cfg: CountyConfig) -> None:
     _rebuild_index()
 
     # Stamp the offline-map update table with this county's last-updated date.
-    import datetime
     log = ROOT / "update_log.csv"
-    rows_log = {}
-    if log.exists():
-        with open(log, encoding="utf-8-sig", newline="") as fh:
-            for r in csv.DictReader(fh):
-                rows_log[r["code"]] = r
+    rows_log = _read_update_log()
     rows_log[cfg.code] = {"code": cfg.code, "county": cfg.name,
                           "records": str(total),
                           "last_updated": datetime.date.today().isoformat()}
@@ -625,7 +690,11 @@ def main():
     ap.add_argument("--list", action="store_true", help="list configured counties")
     ap.add_argument("--all", action="store_true", help="run all configured counties")
     ap.add_argument("--updated-only", action="store_true",
-                    help="run only counties identified with newer releases")
+                    help="probe data.gov.tw and run only counties whose source "
+                         "looks newer than their update_log.csv stamp")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --updated-only, only print which counties would "
+                         "run (and why) without downloading or writing anything")
     args = ap.parse_args()
 
     if args.list or (not args.county and not args.all and not args.updated_only):
@@ -637,10 +706,36 @@ def main():
         return
 
     if args.updated_only:
-        targets = ["澎湖縣", "基隆市", "新竹市", "花蓮縣", "屏東縣",
-                   "臺南市", "桃園市", "臺北市", "高雄市", "新北市"]
-        for name in targets:
-            run(COUNTIES[name])
+        s = _session()
+        selected = counties_needing_update(s)
+        if not selected:
+            print("No counties have newer source data since the last "
+                  "update_log.csv stamp — nothing to do.")
+            return
+        print(f"{len(selected)}/{len(COUNTIES)} counties selected:")
+        for name, reason in selected:
+            print(f"  {name}  ({reason})")
+        if args.dry_run:
+            return
+
+        # Isolate per-county failures: one county's sys.exit()/exception must
+        # not discard the counties that already succeeded in this same run —
+        # this feeds an unattended monthly cron that commits whatever run()
+        # wrote to disk, so a partial batch should still land its good half.
+        failures = []
+        for name, _reason in selected:
+            try:
+                run(COUNTIES[name])
+            except SystemExit as e:
+                print(f"  !! {name} aborted: {e}")
+                failures.append(name)
+            except Exception as e:
+                print(f"  !! {name} failed: {type(e).__name__}: {e}")
+                failures.append(name)
+        if failures:
+            sys.exit(f"ERROR: {len(failures)}/{len(selected)} counties failed: "
+                     f"{', '.join(failures)} (other counties in this run, if "
+                     f"any succeeded, were still written and logged)")
         return
 
     if args.all:
