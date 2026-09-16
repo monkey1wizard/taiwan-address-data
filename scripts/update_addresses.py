@@ -59,6 +59,7 @@ class CountyConfig:
     multi: bool = False           # merge ALL matching distributions (parts), not
                                   # just the first — only when they are genuine
                                   # split parts (e.g. 雲林 XLSX), not redundant copies
+    pick: str = "first"           # "first" or "latest" (by ROC year/month in distribution desc)
     url: str | None = None        # explicit download URL (skip data.gov.tw API)
     page_url: str | None = None   # HTML page to scrape for the latest data link
     page_re: str | None = None    # regex capturing the link href on page_url
@@ -75,6 +76,21 @@ def _zh(**kw) -> dict[str, str]:
     return {**_ZH, **kw}
 
 
+# Fallback aliases when a county slightly alters its CSV header names
+COLUMN_ALIASES = {
+    "town": ["鄉鎮市區代碼", "地址-行政區域代碼", "areacode", "districtCode", "鄉鎮市區"],
+    "village": ["村里", "village"],
+    "nei": ["鄰", "neighbor", "neighborhood"],
+    "street": ["街路段", "街、路段", "街_路段", "街（路段）", "街(路段)", "街或路段",
+               "street、road、section", "streetRoadSection", "street_road_section"],
+    "lane": ["巷", "lane"],
+    "alley": ["弄", "alley"],
+    "number": ["號", "number", "houseNumber", "號樓"],
+    "x": ["橫座標", "橫坐標", "橫座標[E 坐標]", "x_3826", "coordinateX", "X"],
+    "y": ["縱座標", "縱坐標", "縱座標[N 坐標]", "y_3826", "coordinateY", "Y"],
+}
+
+
 COUNTIES = {
     # ── 六都 ──────────────────────────────────────────────────────────────────
     "臺北市": CountyConfig("臺北市", "63", 155472, _ZH),
@@ -85,34 +101,35 @@ COUNTIES = {
                      number="number", x="x_3826", y="y_3826"),
         town_scheme="x10",
     ),
-    "桃園市": CountyConfig("桃園市", "68", 157689, _ZH, domain="data.nat.gov.tw"),
+    "桃園市": CountyConfig("桃園市", "68", 157689, _ZH, domain="data.nat.gov.tw", pick="latest"),
     # 臺中市 (66, 169806) already maintained by a separate script
-    "臺南市": CountyConfig("臺南市", "67", 120044, _zh(street="街、路段")),
-    "高雄市": CountyConfig("高雄市", "64", 172400, _ZH),
+    "臺南市": CountyConfig(
+        "臺南市", "67", 120044,
+        columns=dict(town="地址-行政區域代碼", village="村里", nei="鄰",
+                     street="街路段", lane="巷", alley="弄",
+                     number="號", x="橫座標[E 坐標]", y="縱座標[N 坐標]"),
+    ),
+    "高雄市": CountyConfig("高雄市", "64", 172400, _ZH, pick="latest"),
 
     # ── 縣市 ──────────────────────────────────────────────────────────────────
     "新竹縣": CountyConfig("新竹縣", "10004", 172380, _zh(street="街或路段")),
     "苗栗縣": CountyConfig("苗栗縣", "10005", 176511, _zh(street="街、路段")),
     "彰化縣": CountyConfig("彰化縣", "10007", 170727, _zh(street="街、路段")),
     "嘉義縣": CountyConfig("嘉義縣", "10010", 172873, _zh(street="街、路段")),
-    "屏東縣": CountyConfig("屏東縣", "10013", 170847,
-                          dict(town="districtCode", village="village",
-                               nei="neighborhood", street="streetRoadSection",
-                               lane="lane", alley="alley",
-                               number="houseNumber",
-                               x="coordinateX", y="coordinateY")),
+    "屏東縣": CountyConfig("屏東縣", "10013", 170847, _zh(street="街、路段")),
     "臺東縣": CountyConfig("臺東縣", "10014", 165619,
                           _zh(street="街、路段", number="號樓",
                               x="橫坐標", y="縱坐標")),
-    "花蓮縣": CountyConfig("花蓮縣", "10015", 175221, _zh(street="街、路段")),
-    "澎湖縣": CountyConfig("澎湖縣", "10016", 170852, _zh(street="街（路段）")),
+    "花蓮縣": CountyConfig("花蓮縣", "10015", 175221, _ZH),
+    "澎湖縣": CountyConfig("澎湖縣", "10016", 170852, _zh(street="街_路段")),
 
     # 新竹市: has town code + village, but road/lane/alley/number are merged into a
     # single 地址 field — parse it with addr_col instead of the per-part columns.
+    # Distributed as 3 district CSV parts (香山區, 北區, 東區); merge all 3 with multi=True.
     "新竹市": CountyConfig("新竹市", "10018", 157547,
                           columns=dict(town="鄉鎮市區代碼", village="村里",
                                        nei="鄰", x="橫座標", y="縱座標"),
-                          addr_col="地址"),
+                          addr_col="地址", multi=True),
 
     # 雲林縣 / 金門縣: no CSV distribution — only XLSX/XML/JSON. Read the XLSX.
     # (雲林 publishes the dataset as several XLSX parts; all are merged.)
@@ -159,6 +176,11 @@ class _RelaxedStrictAdapter(HTTPAdapter):
 
 
 def _session() -> requests.Session:
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
     s = requests.Session()
     s.mount("https://", _RelaxedStrictAdapter())
     s.headers.update({"User-Agent": "Mozilla/5.0 (taiwan-address-data updater)"})
@@ -285,6 +307,19 @@ def load_area(cfg: CountyConfig) -> tuple[dict, dict]:
 
 # ── Dataset resolution / download ──────────────────────────────────────────────
 
+def _dist_sort_key(d: dict) -> tuple[int, int]:
+    """Extract (year, month) from distribution description or timestamp for chronological sorting."""
+    desc = str(d.get("resourceDescription") or "")
+    m = re.search(r"(\d+)年(\d+)月", desc)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    qc = str(d.get("resourceQualityCheckTime") or "")
+    m2 = re.search(r"(\d{4})-(\d{2})", qc)
+    if m2:
+        return (int(m2.group(1)), int(m2.group(2)))
+    return (0, 0)
+
+
 def get_download_urls(cfg: CountyConfig, s) -> list[str]:
     """Resolve all download URLs matching cfg.fmt from the data.gov.tw API.
     Returns a list (a dataset may publish several parts, e.g. 雲林 XLSX)."""
@@ -299,14 +334,17 @@ def get_download_urls(cfg: CountyConfig, s) -> list[str]:
             if r.status_code == 200 and r.text.strip().startswith("{"):
                 res = r.json().get("result")
                 if res:
+                    dists = [d for d in res.get("distribution", [])
+                             if d.get("resourceFormat", "").upper() == want
+                             and d.get("resourceDownloadUrl")]
+                    if cfg.pick == "latest":
+                        dists = sorted(dists, key=_dist_sort_key, reverse=True)
                     urls, seen = [], set()
-                    for d in res.get("distribution", []):
-                        if (d.get("resourceFormat", "").upper() == want
-                                and d.get("resourceDownloadUrl")):
-                            u = d["resourceDownloadUrl"].strip()
-                            if u not in seen:
-                                seen.add(u)
-                                urls.append(u)
+                    for d in dists:
+                        u = d["resourceDownloadUrl"].strip()
+                        if u not in seen:
+                            seen.add(u)
+                            urls.append(u)
                     if urls:
                         return urls
         except Exception as e:
@@ -344,12 +382,14 @@ def download_bytes(url: str, s) -> bytes:
 
 
 def decode_bytes(raw: bytes) -> str:
-    for enc in ("utf-8-sig", "utf-8", "big5hkscs", "big5", "cp950"):
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    for enc in ("utf-8", "big5hkscs", "big5", "cp950"):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
             continue
-    return raw.decode("big5hkscs", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def read_csv_rows(raw: bytes) -> list[dict]:
@@ -428,7 +468,23 @@ def run(cfg: CountyConfig) -> None:
 
     rows = load_rows(cfg, s)
 
-    col = cfg.columns
+    col = dict(cfg.columns)
+    if rows:
+        available_fields = set(rows[0].keys())
+        for canonical, configured_name in list(col.items()):
+            if configured_name not in available_fields:
+                for candidate in COLUMN_ALIASES.get(canonical, []):
+                    if candidate in available_fields:
+                        print(f"  Auto-resolved column '{canonical}': '{configured_name}' -> '{candidate}'")
+                        col[canonical] = candidate
+                        break
+        if cfg.addr_col and cfg.addr_col not in available_fields:
+            for candidate in ["地址", "門牌地址", "全址"]:
+                if candidate in available_fields:
+                    print(f"  Auto-resolved addr_col: '{cfg.addr_col}' -> '{candidate}'")
+                    cfg.addr_col = candidate
+                    break
+
     road_groups: dict[str, list[list]] = defaultdict(list)
     skipped = bad_coords = unmatched_villages = 0
 
@@ -487,6 +543,30 @@ def run(cfg: CountyConfig) -> None:
         sys.exit("ERROR: 0 records produced — aborting without touching roads/ "
                  "(check column mapping for this county).")
 
+    # Safety guard 1: if the fresh pull has far fewer records than what's already
+    # on disk, the download was probably truncated — abort rather than overwrite
+    # a good map with a partial one.
+    cur_total = 0
+    cur_files = 0
+    for f in ROADS_DIR.glob(f"{cfg.code}-*.csv"):
+        cur_files += 1
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            cur_total += max(0, sum(1 for _ in fh) - 1)
+    if cur_total > 1000 and total < cur_total * 0.6:
+        sys.exit(f"ERROR: fresh pull {total:,} < 60% of existing {cur_total:,} "
+                 f"records — likely a truncated download; aborting WITHOUT "
+                 f"touching {cfg.name}'s roads/.")
+
+    # Safety guard 2: Empty road / missing road column check.
+    empty_road_records = len(road_groups.get("", []))
+    if cur_files > 10 and len(road_groups) <= 1:
+        sys.exit(f"ERROR: fresh pull produced only {len(road_groups)} road group while {cur_files} "
+                 f"road files existed — likely failed to match road/street column; aborting WITHOUT "
+                 f"touching {cfg.name}'s roads/.")
+    if total > 1000 and (empty_road_records / total) > 0.7:
+        sys.exit(f"ERROR: fresh pull has {empty_road_records:,}/{total:,} records with empty road "
+                 f"({empty_road_records/total*100:.1f}%) — aborting WITHOUT touching {cfg.name}'s roads/.")
+
     print(f"Removing old {cfg.code}-*.csv…")
     removed = sum(1 for f in ROADS_DIR.glob(f"{cfg.code}-*.csv")
                   if (f.unlink() or True))
@@ -518,20 +598,49 @@ def run(cfg: CountyConfig) -> None:
     from build_road_index import build as _rebuild_index
     _rebuild_index()
 
+    # Stamp the offline-map update table with this county's last-updated date.
+    import datetime
+    log = ROOT / "update_log.csv"
+    rows_log = {}
+    if log.exists():
+        with open(log, encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                rows_log[r["code"]] = r
+    rows_log[cfg.code] = {"code": cfg.code, "county": cfg.name,
+                          "records": str(total),
+                          "last_updated": datetime.date.today().isoformat()}
+    with open(log, "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["code", "county", "records", "last_updated"])
+        for c in sorted(rows_log):
+            r = rows_log[c]
+            w.writerow([r["code"], r["county"], r["records"], r["last_updated"]])
+    print(f"  update_log.csv stamped: {cfg.name} {datetime.date.today().isoformat()} "
+          f"({total:,} records)")
+
 
 def main():
     ap = argparse.ArgumentParser(description="Update Taiwan county door-plate map data")
     ap.add_argument("county", nargs="?", help="county name, e.g. 新北市")
     ap.add_argument("--list", action="store_true", help="list configured counties")
     ap.add_argument("--all", action="store_true", help="run all configured counties")
+    ap.add_argument("--updated-only", action="store_true",
+                    help="run only counties identified with newer releases")
     args = ap.parse_args()
 
-    if args.list or (not args.county and not args.all):
+    if args.list or (not args.county and not args.all and not args.updated_only):
         print("Configured counties:")
         for name, c in COUNTIES.items():
             src = f"dataset {c.dataset_id}" if c.dataset_id else "direct CSV"
             tag = f", {c.fmt}" if c.fmt != "csv" else ""
             print(f"  {name}  (code {c.code}, {src}{tag})")
+        return
+
+    if args.updated_only:
+        targets = ["澎湖縣", "基隆市", "新竹市", "花蓮縣", "屏東縣",
+                   "臺南市", "桃園市", "臺北市", "高雄市", "新北市"]
+        for name in targets:
+            run(COUNTIES[name])
         return
 
     if args.all:
