@@ -128,9 +128,9 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -264,6 +264,7 @@ jobs:
 | 觸發時間非準點 | GitHub Actions 尖峰負載時 `schedule` 可能延遲，只保證「不早於」設定時間 |
 | 只認 default branch | 排程一定是跑 `main` 上最新的 commit，跟哪個分支無關 |
 | `keepalive.yml` 本身也受 60 天規則約束 | 它是另一支獨立排程 workflow，理論上也可能被停用；但它自己每週跑一次，每次都會產生一筆 Actions run，這筆 run 本身就會被算進 repo activity，不會出現「兩支排程互相指望對方防呆、結果一起被停用」的情況 |
+| `actions/*` 官方 action 的大版號會過期 | GitHub runner 淘汰舊版 Node.js 執行環境時（例如 2026-09 淘汰 Node 20），釘死的 `actions/checkout@vN` / `actions/setup-python@vN` 可能被強制跑在新版 Node 上並印出 deprecation warning；出現這種警告時直接查對應 action 的 Releases 頁面，把版號升到當時的最新大版號即可，不是這份設計本身的問題 |
 
 ## 8. 部署後第一次驗證步驟
 
