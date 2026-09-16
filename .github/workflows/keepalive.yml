@@ -1,0 +1,15 @@
+name: keepalive
+
+on:
+  schedule:
+    # 每週日 01:27 UTC 檢查一次；41 天保留緩衝，遠早於 60 天門檻
+    - cron: '27 1 * * SUN'
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: efrecon/gh-action-keepalive@main

@@ -1,0 +1,72 @@
+name: Monthly address update
+
+on:
+  schedule:
+    - cron: '0 2 5 * *'
+      timezone: "Asia/Taipei"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只印會更新哪些縣市，不下載不寫檔"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monthly-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install requests pyproj openpyxl
+
+      - name: Dry-run selection (always logged)
+        run: python scripts/update_addresses.py --updated-only --dry-run
+
+      - name: Run updater
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        id: run_update
+        continue-on-error: true
+        run: python scripts/update_addresses.py --updated-only
+
+      - name: Check for changes
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        id: diff
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: ${{ github.event.inputs.dry_run != 'true' && steps.diff.outputs.changed == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(data): monthly auto-update $(date -u +%Y-%m-%d)"
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt/3) — rebasing onto latest main"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "::error::push still failing after 3 attempts — needs manual conflict resolution"
+          exit 1
+
+      - name: Fail the job if the updater reported per-county errors
+        if: ${{ github.event.inputs.dry_run != 'true' && steps.run_update.outcome == 'failure' }}
+        run: exit 1
