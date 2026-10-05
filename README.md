@@ -26,12 +26,21 @@ taiwan-address-lookup/
 ├── area_1984.csv               # 更早舊名對照
 ├── road.csv                    # 路名索引（縣市代碼 ↔ 路名，由 build_road_index.py 產生）
 ├── roads/                      # 門牌座標資料，一檔一路：{縣市代碼}-{路名}.csv
+├── supplements/                # 經審查的地址補充來源、來源證據與固定基底資訊
+├── docs/
+│   └── supplements.md          # 地址補充層的合約、匯入與物化程序
 └── scripts/
     ├── update_addresses.py     # 主更新器：下載各縣市門牌資料並重建 roads/
     ├── build_road_index.py     # 從 roads/ 重建 road.csv 索引
     ├── build_area_2015.py      # 從 roads/ 提取新行政區映射，產生 area_2015.csv
-    └── probe_counties.py       # 工具：探查 data.gov.tw 各縣市資料集
+    ├── probe_counties.py       # 工具：探查 data.gov.tw 各縣市資料集
+    ├── import_lvr_patch.py     # 驗證並匯入 LVR 地址補充快照
+    └── materialize_addresses.py # 產生既有資料加補充層的候選資料
 ```
+
+### 地址補充層
+
+`supplements/` 保存經審查的增量地址及其來源證據。它不會直接改寫 `roads/`。`scripts/materialize_addresses.py` 會把固定版本的既有資料與補充來源合併到獨立候選目錄，供後續抽樣與發布審查。操作方式與限制請參閱 [地址補充層](docs/supplements.md)。
 
 ### area\_\*.csv 疊層機制
 

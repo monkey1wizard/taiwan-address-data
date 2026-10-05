@@ -1,0 +1,31 @@
+name: Supplement tests
+
+on:
+  push:
+    paths:
+      - "scripts/import_lvr_patch.py"
+      - "scripts/materialize_addresses.py"
+      - "scripts/supplement_common.py"
+      - "tests/test_supplements.py"
+      - ".github/workflows/supplement-tests.yml"
+  pull_request:
+    paths:
+      - "scripts/import_lvr_patch.py"
+      - "scripts/materialize_addresses.py"
+      - "scripts/supplement_common.py"
+      - "tests/test_supplements.py"
+      - ".github/workflows/supplement-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pyarrow==25.0.1
+      - run: python -m unittest discover -s tests -v

@@ -8,3 +8,6 @@ venv/
 .playwright-mcp/
 .dev/
 *.tmp
+data/work/
+supplements/.staging/
+supplements/.import-lock/

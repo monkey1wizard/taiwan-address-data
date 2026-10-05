@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "source_kind": "legacy_base",
+  "repository": "https://github.com/monkey1wizard/taiwan-address-data",
+  "commit": "02887978ef19c1067e339787bae976a72d4723af",
+  "road_file_count": 27176,
+  "roads_tree_sha256": "f2a6204bf611ba5b71ffb5cc3df68b938624aa4f9c0e66dc690ed8c17a5f73d5",
+  "road_index_sha256": "499b337bf3bc89213c29605febbce5366a66058c0ab08b32ab0edc4941e6ddb4",
+  "license_status": "pending_upstream_evidence",
+  "rights_note": "Each upstream dataset requires its own redistribution evidence before public coordinate release."
+}
