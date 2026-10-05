@@ -46,7 +46,7 @@ def _write_road_index(roads: Path, output: Path) -> None:
         writer.writerows(entries)
 
 
-def materialize(base: Path, supplements: Path, output: Path) -> Path:
+def _materialize_locked(base: Path, supplements: Path, output: Path) -> Path:
     base, supplements, output = Path(base).resolve(), Path(supplements).resolve(), Path(output).resolve()
     descriptor = json.loads((supplements / "legacy-base.json").read_text(encoding="utf-8"))
     root_manifest = json.loads((supplements / "manifest.json").read_text(encoding="utf-8"))
@@ -123,6 +123,19 @@ def materialize(base: Path, supplements: Path, output: Path) -> Path:
         if stage.exists():
             shutil.rmtree(stage)
         raise
+
+
+def materialize(base: Path, supplements: Path, output: Path) -> Path:
+    supplements = Path(supplements).resolve()
+    lock = supplements / ".import-lock"
+    try:
+        lock.mkdir()
+    except FileExistsError as exc:
+        raise RuntimeError("Supplement writer busy or stale lock") from exc
+    try:
+        return _materialize_locked(base, supplements, output)
+    finally:
+        lock.rmdir()
 
 
 def main() -> int:

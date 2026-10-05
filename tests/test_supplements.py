@@ -181,6 +181,23 @@ class SupplementTests(unittest.TestCase):
                 materialize(base, supplements, output)
             self.assertFalse(output.exists())
 
+    def test_materialization_rejects_changed_legacy_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, supplements = _base_and_supplements(root)
+            with (base / "roads" / "63000-原有路.csv").open("a", encoding="utf-8") as stream:
+                stream.write("changed")
+            with self.assertRaisesRegex(ValueError, "differ from pinned manifest"):
+                materialize(base, supplements, root / "candidate")
+
+    def test_materialization_and_import_share_write_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, supplements = _base_and_supplements(root)
+            (supplements / ".import-lock").mkdir()
+            with self.assertRaisesRegex(RuntimeError, "writer busy"):
+                materialize(base, supplements, root / "candidate")
+
     def test_import_rejects_tampered_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

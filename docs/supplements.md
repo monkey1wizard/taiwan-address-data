@@ -46,7 +46,7 @@ python scripts\materialize_addresses.py `
   --output data\work\address-candidate
 ```
 
-物化程序會先驗證 `legacy-base.json` 固定的 `roads/` 與 `road.csv`。程序會在獨立暫存目錄合併資料、重建 `road.csv`，並產生 `materialization-manifest.json`。如果相同 `FULL_ADDR` 的其他欄位不同，程序會停止，且不會留下候選目錄。
+匯入與物化程序共用寫入鎖，避免兩項作業重疊。物化程序會先驗證 `legacy-base.json` 固定的 `roads/` 與 `road.csv`。程序會在獨立暫存目錄合併資料、重建 `road.csv`，並產生 `materialization-manifest.json`。如果相同 `FULL_ADDR` 的其他欄位不同，程序會停止，且不會留下候選目錄。
 
 候選資料通過抽樣、權限及發布審查後，才可取代公開的 `roads/` 與 `road.csv`。本文件不代表真實補充資料已獲准發布。
 
