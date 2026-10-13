@@ -374,7 +374,8 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
 
     A "number" fix belongs to one door plate, so its key is street + lane +
     alley + number and it only changes the number part. A "neighborhood" fix
-    uses the same key, taken before the number is fixed."""
+    uses the same key, taken before the number is fixed. A "drop" fix with
+    that key marks the whole row for removal and returns "drop"."""
     applied = []
     for fld in FIX_FIELDS:
         new = fixes.get((tcode, fld, parts[fld]))
@@ -383,6 +384,8 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
             applied.append(fld)
     if "number" in parts:
         prefix = parts["street"] + parts["lane"] + parts.get("alley", "")
+        if (tcode, "drop", prefix + parts["number"]) in fixes:
+            return applied + ["drop"]
         nei = fixes.get((tcode, "neighborhood", prefix + parts["number"]))
         if nei is not None and "neighborhood" in parts:
             parts["neighborhood"] = nei
@@ -668,11 +671,13 @@ def run(cfg: CountyConfig) -> None:
     road_groups: dict[str, list[list]] = defaultdict(list)
     skipped = bad_coords = unmatched_villages = 0
     fixed: dict[str, int] = defaultdict(int)
+    dropped = 0
     residual_q: dict[str, int] = defaultdict(int)
     residual_pua: dict[str, int] = defaultdict(int)
 
     print("Processing records…")
     for i, row in enumerate(rows, 1):
+        applied: list[str] = []
         try:
             nei_raw = (row.get(col["nei"]) or "").strip().lstrip("0") or "0"
             neighborhood = (nei_raw + "鄰") if nei_raw != "0" else ""
@@ -690,7 +695,8 @@ def run(cfg: CountyConfig) -> None:
                     row, col, cfg, name_to_code, variants)
                 parts = {"village": village_name, "street": street, "lane": lane,
                          "alley": alley, "number": number, "neighborhood": neighborhood}
-                for fld in apply_char_fixes(fixes, tcode, parts):
+                applied = apply_char_fixes(fixes, tcode, parts)
+                for fld in applied:
                     fixed[fld] += 1
                 village_name, street, lane, number, neighborhood = (
                     parts["village"], parts["street"], parts["lane"], parts["number"],
@@ -704,7 +710,8 @@ def run(cfg: CountyConfig) -> None:
                     row.get(cfg.addr_col) or "")
                 parts = {"village": village_name, "street": road + section, "lane": lane,
                          "alley": alley, "number": number, "neighborhood": neighborhood}
-                for fld in apply_char_fixes(fixes, tcode, parts):
+                applied = apply_char_fixes(fixes, tcode, parts)
+                for fld in applied:
                     fixed[fld] += 1
                 village_name, lane, number, neighborhood = (
                     parts["village"], parts["lane"], parts["number"], parts["neighborhood"])
@@ -720,6 +727,9 @@ def run(cfg: CountyConfig) -> None:
             skipped += 1
             continue
 
+        if "drop" in applied:
+            dropped += 1
+            continue
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             bad_coords += 1
             continue
@@ -745,7 +755,7 @@ def run(cfg: CountyConfig) -> None:
     print(f"  Done — {total:,} records, {skipped} skipped, "
           f"{bad_coords} bad coords, {unmatched_villages} unmatched villages "
           f"({unmatched_villages/max(total,1)*100:.2f}%)")
-    print(f"  char fixes applied: {dict(fixed) or 0}")
+    print(f"  char fixes applied: {dict(fixed) or 0}, rows dropped: {dropped}")
     if residual_q:
         print(f"  WARNING: '?', '■' or '？' remains in {dict(residual_q)}")
     if residual_pua:

@@ -79,6 +79,10 @@ def fix_county(code: str) -> None:
     changed_rows = 0
     for name in sorted(old):
         for row in old[name]:
+            key = row["ROAD"] + row["SECTION"] + row["LANE"] + row["ALLEY"] + row["NUMBER"]
+            if (row["TOWN"], "drop", key) in fixes:
+                changed_rows += 1
+                continue
             changed_rows += fix_row(row, fixes, variants)
             new[f"{code}-{ua.safe_filename(row['ROAD'])}.csv"].append(row)
 
