@@ -71,6 +71,15 @@ def fix_row(row: dict, fixes: dict, variants: dict) -> bool:
     return row != before
 
 
+def format_coords(row: dict) -> None:
+    """Rewrite X and Y with format_coord; unparsable values stay as they are."""
+    for k in ("X", "Y"):
+        try:
+            row[k] = ua.format_coord(float(row[k]))
+        except ValueError:
+            pass
+
+
 def fix_county(code: str) -> None:
     fixes = ua.load_char_fixes(code)
     variants = ua.load_rare_chars().get(code, {})
@@ -84,6 +93,7 @@ def fix_county(code: str) -> None:
                 changed_rows += 1
                 continue
             changed_rows += fix_row(row, fixes, variants)
+            format_coords(row)
             new[f"{code}-{ua.safe_filename(row['ROAD'])}.csv"].append(row)
 
     dedupe_removed = 0

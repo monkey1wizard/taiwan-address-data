@@ -117,8 +117,8 @@ class CharFixesTableTest(unittest.TestCase):
 
     def test_restored_characters_are_in_rare_chars(self) -> None:
         for r in self.rows:
-            if "擁有者改寫" in r["evidence"]:
-                # The owner rewrote the text itself, not only the lost character.
+            if "改寫" in r["evidence"]:
+                # The value was rewritten, not only a lost character filled in.
                 self.assertFalse(any(is_private_use(c) for c in r["fixed_value"]))
                 continue
             marks = [c for c in r["source_value"] if c in "?■？"]

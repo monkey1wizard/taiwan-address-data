@@ -11,3 +11,5 @@ venv/
 data/work/
 supplements/.staging/
 supplements/.import-lock/
+roads/.staging-*/
+roads/.old-*/

@@ -35,6 +35,7 @@ from urllib3.poolmanager import PoolManager
 ROOT = Path(__file__).resolve().parent.parent
 ROADS_DIR = ROOT / "roads"
 AREA_CSV = ROOT / "area_2014.csv"
+AREA_2015_CSV = ROOT / "area_2015.csv"
 RARE_CHARS_CSV = ROOT / "rare_chars.csv"
 CHAR_FIXES_CSV = ROOT / "char_fixes.csv"
 
@@ -310,7 +311,83 @@ def load_area(cfg: CountyConfig) -> tuple[dict, dict]:
                     village = rest[len(district):]
                     if village:
                         villages[(tcode, village)] = code
+    # area_2015.csv adds villages under districts renamed after 2014 (員林鎮 ->
+    # 員林市). town_names stays 2014-only so FULL_ADDR text does not change.
+    if AREA_2015_CSV.exists():
+        districts15: dict[str, str] = {}
+        rows15 = []
+        with open(AREA_2015_CSV, encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if len(row) < 2:
+                    continue
+                name, code = row[0].strip().replace("　", ""), row[1].strip()
+                if not name.startswith(prefix):
+                    continue
+                if "-" not in code:
+                    if len(code) == 7 and name[len(prefix):]:
+                        districts15[code] = name[len(prefix):]
+                else:
+                    rows15.append((name[len(prefix):], code))
+        for rest, code in rows15:
+            tcode = code.split("-")[0]
+            for district in (town_names.get(tcode, ""), districts15.get(tcode, "")):
+                if district and rest.startswith(district):
+                    village = rest[len(district):]
+                    if village:
+                        villages.setdefault((tcode, village), code)
+                    break
     return town_names, villages
+
+
+def normalize_bracketed(s: str) -> str:
+    """Remove ( ) / [ ] / （ ） around exactly one CJK character: "(塭)南里"
+    -> "塭南里". Longer bracket contents such as "石[石曹]里" stay as is."""
+    return _BRACKETED_RE.sub(r"\1", s)
+
+
+def format_coord(v: float) -> str:
+    """Coordinate text with a fixed 9 decimal places."""
+    return f"{v:.9f}"
+
+
+def swap_county_files(roads_dir: Path, code: str, by_file: dict) -> None:
+    """Replace roads_dir/{code}-*.csv by the rows in by_file ({file stem
+    after "{code}-": rows}). New files are written to .staging-{code} first;
+    the old files are only moved away once every new file exists. A failed swap
+    moves the old files back and re-raises."""
+    import shutil
+    staging = roads_dir / f".staging-{code}"
+    old = roads_dir / f".old-{code}"
+    for d in (staging, old):
+        if d.exists():
+            shutil.rmtree(d)
+    staging.mkdir(parents=True)
+    for fname, records in by_file.items():
+        with open(staging / f"{code}-{fname}.csv", "w",
+                  newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(CSV_HEADER)
+            w.writerows(records)
+    old.mkdir()
+    moved_old: list[Path] = []
+    moved_new: list[Path] = []
+    try:
+        for f in roads_dir.glob(f"{code}-*.csv"):
+            shutil.move(str(f), str(old / f.name))
+            moved_old.append(f)
+        for f in staging.iterdir():
+            shutil.move(str(f), str(roads_dir / f.name))
+            moved_new.append(roads_dir / f.name)
+    except BaseException:
+        print(f"ERROR: swapping {code}-*.csv failed; restoring the old files "
+              f"from {old}", file=sys.stderr)
+        for f in moved_new:
+            f.unlink(missing_ok=True)
+        for f in moved_old:
+            shutil.move(str(old / f.name), str(f))
+        raise
+    shutil.rmtree(old)
+    shutil.rmtree(staging)
 
 
 # ── Missing-character repair ────────────────────────────────────────────────────
@@ -398,6 +475,10 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
     return applied
 
 
+_BRACKETED_RE = re.compile(
+    r"[\(（\[]([\u4e00-\u9fff\u3400-\u4dbf\U00020000-\U000323AF\uf900-\ufaff])[\)）\]]")
+
+
 def source_fields(row: dict, col: dict, cfg: CountyConfig, name_to_code: dict,
                   variants: dict[str, str]) -> tuple[str, str, str, str, str, str]:
     """(town code, village, street, lane, alley, number) as read from one source
@@ -412,8 +493,9 @@ def source_fields(row: dict, col: dict, cfg: CountyConfig, name_to_code: dict,
     # NFC turns CJK compatibility ideographs into the standard character.
     v = lambda key: unicodedata.normalize(
         "NFC", apply_variants(row.get(col[key]) or "", variants))
-    return (tcode, v("village").strip(), v("street").strip(),
-            normalize(v("lane")), normalize(v("alley")), normalize(v("number")))
+    vb = lambda key: normalize_bracketed(v(key))
+    return (tcode, vb("village").strip(), vb("street").strip(),
+            normalize(vb("lane")), normalize(v("alley")), normalize(v("number")))
 
 
 # ── Dataset resolution / download ──────────────────────────────────────────────
@@ -827,7 +909,7 @@ def run(cfg: CountyConfig) -> None:
                      + road + section + lane + alley + number)
         record = [full_addr, cfg.code, tcode, village, neighborhood,
                   road, section, lane, alley, "", "", number,
-                  f"{lon:.15g}", f"{lat:.15g}"]
+                  format_coord(lon), format_coord(lat)]
         road_groups[road or ""].append(record)
         if i % 100_000 == 0:
             print(f"  {i:,} processed…")
@@ -878,11 +960,6 @@ def run(cfg: CountyConfig) -> None:
     total = sum(len(v) for v in road_groups.values())
     print(f"  door-plate dedupe removed {dedupe_removed:,} rows ({total:,} kept)")
 
-    print(f"Removing old {cfg.code}-*.csv…")
-    removed = sum(1 for f in ROADS_DIR.glob(f"{cfg.code}-*.csv")
-                  if (f.unlink() or True))
-    print(f"  Removed {removed} files")
-
     # Merge by sanitized filename so Windows-illegal road names (e.g. containing
     # ? * : ) don't crash, and any two roads colliding to one name are combined.
     by_file: dict[str, list[list]] = defaultdict(list)
@@ -893,13 +970,8 @@ def run(cfg: CountyConfig) -> None:
             collisions += 1
         by_file[fname].extend(records)
 
-    print(f"Writing {len(by_file)} road files…")
-    for fname, records in by_file.items():
-        with open(ROADS_DIR / f"{cfg.code}-{fname}.csv", "w",
-                  newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh)
-            w.writerow(CSV_HEADER)
-            w.writerows(records)
+    print(f"Writing {len(by_file)} road files via staging directory…")
+    swap_county_files(ROADS_DIR, cfg.code, by_file)
     note = f" ({collisions} sanitized-name merges)" if collisions else ""
     print(f"Done. {cfg.name}: {len(by_file)} road files, {total:,} records{note}.")
 
