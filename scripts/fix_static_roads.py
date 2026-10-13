@@ -6,7 +6,8 @@ Their roads/ files come from the 2016 import or a TGOS snapshot, so there is no
 government source to rerun. This script rewrites the tracked road files of one
 county in place: it fixes ROAD/SECTION and LANE values listed for each town,
 replaces the matching text in FULL_ADDR, and regroups the rows by the fixed
-road name. Files whose names contain "?" cannot exist on Windows, so they are
+road name. A "full_addr" fix only replaces text inside FULL_ADDR, for rows
+whose road name exists only there. Files whose names contain "?" cannot exist on Windows, so they are
 read from git HEAD and removed from the index with `git rm --cached --sparse`.
 
 Usage:
@@ -53,6 +54,9 @@ def fix_row(row: dict, fixes: dict, variants: dict) -> bool:
     if new_street is not None:
         row["ROAD"], row["SECTION"] = ua.split_section(new_street)
         row["FULL_ADDR"] = row["FULL_ADDR"].replace(street, new_street, 1)
+    for (t, fld, old), new in fixes.items():
+        if t == town and fld == "full_addr" and old in row["FULL_ADDR"]:
+            row["FULL_ADDR"] = row["FULL_ADDR"].replace(old, new, 1)
     new_lane = fixes.get((town, "lane", row["LANE"]))
     if new_lane is not None:
         row["FULL_ADDR"] = row["FULL_ADDR"].replace(row["LANE"], new_lane, 1)

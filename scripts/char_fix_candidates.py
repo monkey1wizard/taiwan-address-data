@@ -10,9 +10,11 @@ against the official lists in the same town:
   village  NLSC village list   api.nlsc.gov.tw/other/ListVillage
   street   RIS road-name list  www.ris.gov.tw/rs-opendata/api/v1/datastore/ODRP049
 
-A value is "unique" only when exactly one official name matches and every
-character at a placeholder position, as the official list writes it, is
-outside Big5 and not a private-use code point. NLSC writes a rare character
+A value is "unique" only when exactly one official name matches. A
+character at a "?" position, as the official list writes it, must be outside
+Big5, because "?" comes from a Big5 export. "■" and "？" also appear in
+Unicode sources for ordinary characters, so they only exclude private-use
+code points. NLSC writes a rare character
 as "[X]". RIS sometimes uses a CJK compatibility ideograph, which Big5 cannot
 encode either. The fixed value is NFC-normalized, so it uses the standard
 character. Streets with a numbered section are matched on the road part and
@@ -136,8 +138,10 @@ def _pattern(value: str) -> str:
     return "".join("(.)" if ch in ua.PLACEHOLDERS else re.escape(ch) for ch in value)
 
 
-def _ok(groups) -> bool:
-    return all(outside_big5(g) and not ua.is_private_use(g) for g in groups)
+def _ok(groups, value: str) -> bool:
+    marks = [ch for ch in value if ch in ua.PLACEHOLDERS]
+    return all(not ua.is_private_use(g) and (mark != "?" or outside_big5(g))
+               for g, mark in zip(groups, marks))
 
 
 def match(value: str, pool: set[str]) -> list[str]:
@@ -146,7 +150,7 @@ def match(value: str, pool: set[str]) -> list[str]:
     hits = set()
     for name in pool:
         m = pat.fullmatch(name)
-        if m and _ok(m.groups()):
+        if m and _ok(m.groups(), value):
             hits.add(unicodedata.normalize("NFC", name))
     return sorted(hits)
 
@@ -162,7 +166,7 @@ def match_prefix(value: str, pool: set[str]) -> list[str]:
         if ua.has_placeholder(rest):
             continue
         m = re.fullmatch(_pattern(value[:len(name)]), name)
-        if m and _ok(m.groups()):
+        if m and _ok(m.groups(), value[:len(name)]):
             hits.add(unicodedata.normalize("NFC", name) + rest)
     return sorted(hits)
 
@@ -286,7 +290,7 @@ def legacy_candidates(cfg, unresolved: set[tuple[str, str, str]]) -> list[dict]:
         ok = set()
         for old in hits:
             m = re.fullmatch(_pattern(val), old) if old else None
-            if m and _ok(m.groups()):
+            if m and _ok(m.groups(), val):
                 ok.add(unicodedata.normalize("NFC", old))
         joined = sum(n for old, n in hits.items() if old)
         status = "unique" if len(ok) == 1 and all(

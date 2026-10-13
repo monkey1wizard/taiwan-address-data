@@ -686,6 +686,12 @@ def run(cfg: CountyConfig) -> None:
             if cfg.addr_col:
                 road, section, lane, alley, number = parse_address(
                     row.get(cfg.addr_col) or "")
+                parts = {"village": village_name, "street": road + section, "lane": lane}
+                for fld in apply_char_fixes(fixes, tcode, parts):
+                    fixed[fld] += 1
+                village_name, lane = parts["village"], parts["lane"]
+                road, section = split_section(parts["street"])
+                village = villages.get((tcode, village_name), tcode + "-000")
             else:
                 road, section = split_section(street)
 

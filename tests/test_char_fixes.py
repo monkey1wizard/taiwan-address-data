@@ -111,16 +111,22 @@ class CharFixesTableTest(unittest.TestCase):
         keys = [(r["county"], r["town"], r["field"], r["source_value"]) for r in self.rows]
         self.assertEqual(len(keys), len(set(keys)))
         for r in self.rows:
-            self.assertIn(r["field"], FIX_FIELDS)
+            # "full_addr" is only applied by fix_static_roads.py.
+            self.assertIn(r["field"], FIX_FIELDS + ("full_addr",))
             self.assertTrue(r["evidence"] and r["checked_on"])
 
     def test_restored_characters_are_in_rare_chars(self) -> None:
         for r in self.rows:
-            for ch in _question_chars(r["source_value"], r["fixed_value"]):
+            marks = [c for c in r["source_value"] if c in "?■？"]
+            for ch, mark in zip(_question_chars(r["source_value"], r["fixed_value"]), marks):
+                self.assertFalse(is_private_use(ch), r["fixed_value"])
                 if ch in self.compat:
                     continue
-                self.assertIn(ch, self.standard, r["fixed_value"])
-                self.assertFalse(_in_big5(ch), r["fixed_value"])
+                if mark == "?":
+                    # "?" comes from a Big5 export, so the lost character is outside Big5.
+                    self.assertFalse(_in_big5(ch), r["fixed_value"])
+                if not _in_big5(ch):
+                    self.assertIn(ch, self.standard, r["fixed_value"])
 
     def test_restored_villages_have_area_codes(self) -> None:
         by_code = {cfg.code: cfg for cfg in COUNTIES.values()}
@@ -215,6 +221,14 @@ class NormalizeAndStaticFixTest(unittest.TestCase):
         self.assertEqual(lane["FULL_ADDR"], "宜蘭縣南澳鄉武塔村6鄰新溪路温泉巷2號")
         untouched = dict(lane, LANE="田?巷", FULL_ADDR="x田?巷")
         self.assertFalse(fix_row(untouched, fixes, {}))
+
+    def test_static_full_address_fix_leaves_columns(self) -> None:
+        fixes = {("6601400", "full_addr", "文明■"): "文明街"}
+        row = {"FULL_ADDR": "臺中市梧棲區大村里24鄰文明■294號", "TOWN": "6601400",
+               "ROAD": "", "SECTION": "", "LANE": "", "ALLEY": "", "NUMBER": "294號"}
+        self.assertTrue(fix_row(row, fixes, {}))
+        self.assertEqual(row["FULL_ADDR"], "臺中市梧棲區大村里24鄰文明街294號")
+        self.assertEqual(row["ROAD"], "")
 
 
 if __name__ == "__main__":
