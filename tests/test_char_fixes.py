@@ -112,7 +112,7 @@ class CharFixesTableTest(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         for r in self.rows:
             # "full_addr" is only applied by fix_static_roads.py.
-            self.assertIn(r["field"], FIX_FIELDS + ("full_addr", "number"))
+            self.assertIn(r["field"], FIX_FIELDS + ("full_addr", "number", "neighborhood"))
             self.assertTrue(r["evidence"] and r["checked_on"])
 
     def test_restored_characters_are_in_rare_chars(self) -> None:
@@ -239,6 +239,15 @@ class NormalizeAndStaticFixTest(unittest.TestCase):
                "ROAD": "重慶路", "SECTION": "", "LANE": "93巷", "ALLEY": "", "NUMBER": "32號二■"}
         self.assertTrue(fix_row(row, fixes, {}))
         self.assertEqual(row["FULL_ADDR"], "新北市板橋區後埔里8鄰重慶路93巷32號二樓")
+
+    def test_neighborhood_fix_uses_the_source_number(self) -> None:
+        fixes = {("0902001", "neighborhood", "珠浦東路36?1號"): "4鄰",
+                 ("0902001", "number", "珠浦東路36?1號"): "珠浦東路36號之2"}
+        parts = {"village": "東門里", "street": "珠浦東路", "lane": "", "alley": "",
+                 "number": "36?1號", "neighborhood": "25鄰"}
+        self.assertEqual(sorted(apply_char_fixes(fixes, "0902001", parts)),
+                         ["neighborhood", "number"])
+        self.assertEqual((parts["neighborhood"], parts["number"]), ("4鄰", "36號之2"))
 
     def test_static_full_address_fix_leaves_columns(self) -> None:
         fixes = {("6601400", "full_addr", "文明■"): "文明街"}
