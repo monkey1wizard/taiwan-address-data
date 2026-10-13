@@ -33,6 +33,8 @@ from urllib3.poolmanager import PoolManager
 ROOT = Path(__file__).resolve().parent.parent
 ROADS_DIR = ROOT / "roads"
 AREA_CSV = ROOT / "area_2014.csv"
+RARE_CHARS_CSV = ROOT / "rare_chars.csv"
+CHAR_FIXES_CSV = ROOT / "char_fixes.csv"
 
 CSV_HEADER = [
     "FULL_ADDR", "COUNTY", "TOWN", "VILLAGE", "NEIGHBORHOOD",
@@ -309,6 +311,83 @@ def load_area(cfg: CountyConfig) -> tuple[dict, dict]:
     return town_names, villages
 
 
+# ── Missing-character repair ────────────────────────────────────────────────────
+# Government exports write every character outside Big5 as a literal "?".
+# char_fixes.csv restores reviewed values per (county, town, field, value).
+# rare_chars.csv maps each source's own spelling of a rare character (private
+# use code points, "[磘]") to one standard Unicode character.
+
+FIX_FIELDS = ("village", "street", "lane")
+
+
+def is_private_use(ch: str) -> bool:
+    cp = ord(ch)
+    return (0xE000 <= cp <= 0xF8FF or 0xF0000 <= cp <= 0xFFFFD
+            or 0x100000 <= cp <= 0x10FFFD)
+
+
+def load_rare_chars(path: Path = RARE_CHARS_CSV) -> dict[str, dict[str, str]]:
+    """{source: {written form: standard char}} for every non-standard row.
+    Private-use code points are agency-specific, so forms only apply to the
+    source they were recorded for."""
+    out: dict[str, dict[str, str]] = defaultdict(dict)
+    if not path.exists():
+        return out
+    with open(path, encoding="utf-8", newline="") as fh:
+        for r in csv.DictReader(fh):
+            if r["source"] != "標準":
+                out[r["source"]][r["form"]] = r["standard"]
+    return out
+
+
+def apply_variants(s: str, variants: dict[str, str]) -> str:
+    for form, std in variants.items():
+        s = s.replace(form, std)
+    return s
+
+
+def load_char_fixes(code: str, path: Path = CHAR_FIXES_CSV) -> dict[tuple[str, str, str], str]:
+    """{(town code, field, source value): fixed value} for one county."""
+    out: dict[tuple[str, str, str], str] = {}
+    if not path.exists():
+        return out
+    with open(path, encoding="utf-8", newline="") as fh:
+        for r in csv.DictReader(fh):
+            if r["county"] == code:
+                out[(r["town"], r["field"], r["source_value"])] = r["fixed_value"]
+    return out
+
+
+def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
+                     parts: dict[str, str]) -> list[str]:
+    """Replace village/street/lane values listed in char_fixes.csv for this
+    town. Values not listed are left as they are, "?" included. Returns the
+    fields that were replaced."""
+    applied = []
+    for fld in FIX_FIELDS:
+        new = fixes.get((tcode, fld, parts[fld]))
+        if new is not None:
+            parts[fld] = new
+            applied.append(fld)
+    return applied
+
+
+def source_fields(row: dict, col: dict, cfg: CountyConfig, name_to_code: dict,
+                  variants: dict[str, str]) -> tuple[str, str, str, str, str, str]:
+    """(town code, village, street, lane, alley, number) as read from one source
+    row, before char_fixes. Shared by run() and the char-fix candidate script so
+    both key fixes on the same values."""
+    if cfg.town_scheme == "name":
+        tcode = name_to_code.get((row.get(col["town"]) or "").strip())
+        if not tcode:
+            raise ValueError("unknown district name")
+    else:
+        tcode = town_code((row.get(col["town"]) or "").strip(), cfg)
+    v = lambda key: apply_variants(row.get(col[key]) or "", variants)
+    return (tcode, v("village").strip(), v("street").strip(),
+            normalize(v("lane")), normalize(v("alley")), normalize(v("number")))
+
+
 # ── Dataset resolution / download ──────────────────────────────────────────────
 
 def _dist_sort_key(d: dict) -> tuple[int, int]:
@@ -558,19 +637,35 @@ def run(cfg: CountyConfig) -> None:
                     cfg.addr_col = candidate
                     break
 
+    variants = load_rare_chars().get(cfg.code, {})
+    fixes = load_char_fixes(cfg.code)
+    print(f"  {len(fixes)} char fixes, {len(variants)} rare-char forms for {cfg.code}")
+
     road_groups: dict[str, list[list]] = defaultdict(list)
     skipped = bad_coords = unmatched_villages = 0
+    fixed: dict[str, int] = defaultdict(int)
+    residual_q: dict[str, int] = defaultdict(int)
+    residual_pua: dict[str, int] = defaultdict(int)
 
     print("Processing records…")
     for i, row in enumerate(rows, 1):
         try:
-            if cfg.town_scheme == "name":
-                tcode = name_to_code.get((row.get(col["town"]) or "").strip())
-                if not tcode:
-                    raise ValueError("unknown district name")
+            if cfg.addr_col:
+                if cfg.town_scheme == "name":
+                    tcode = name_to_code.get((row.get(col["town"]) or "").strip())
+                    if not tcode:
+                        raise ValueError("unknown district name")
+                else:
+                    tcode = town_code((row.get(col["town"]) or "").strip(), cfg)
+                village_name = (row.get(col["village"]) or "").strip()
             else:
-                tcode = town_code((row.get(col["town"]) or "").strip(), cfg)
-            village_name = (row.get(col["village"]) or "").strip()
+                tcode, village_name, street, lane, alley, number = source_fields(
+                    row, col, cfg, name_to_code, variants)
+                parts = {"village": village_name, "street": street, "lane": lane}
+                for fld in apply_char_fixes(fixes, tcode, parts):
+                    fixed[fld] += 1
+                village_name, street, lane = (parts["village"], parts["street"],
+                                              parts["lane"])
             village = villages.get((tcode, village_name), tcode + "-000")
             if village == tcode + "-000":
                 unmatched_villages += 1
@@ -582,10 +677,7 @@ def run(cfg: CountyConfig) -> None:
                 road, section, lane, alley, number = parse_address(
                     row.get(cfg.addr_col) or "")
             else:
-                road, section = split_section((row.get(col["street"]) or "").strip())
-                lane = normalize(row.get(col["lane"]))
-                alley = normalize(row.get(col["alley"]))
-                number = normalize(row.get(col["number"]))
+                road, section = split_section(street)
 
             x_raw = (row.get(col["x"]) or "").strip()
             y_raw = (row.get(col["y"]) or "").strip()
@@ -597,6 +689,13 @@ def run(cfg: CountyConfig) -> None:
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             bad_coords += 1
             continue
+
+        for fld, val in (("village", village_name), ("street", road + section),
+                         ("lane", lane), ("alley", alley), ("number", number)):
+            if "?" in val:
+                residual_q[fld] += 1
+            if any(is_private_use(ch) for ch in val):
+                residual_pua[fld] += 1
 
         district = town_names.get(tcode, "")
         full_addr = (cfg.name + district + village_name + neighborhood
@@ -612,6 +711,11 @@ def run(cfg: CountyConfig) -> None:
     print(f"  Done — {total:,} records, {skipped} skipped, "
           f"{bad_coords} bad coords, {unmatched_villages} unmatched villages "
           f"({unmatched_villages/max(total,1)*100:.2f}%)")
+    print(f"  char fixes applied: {dict(fixed) or 0}")
+    if residual_q:
+        print(f"  WARNING: '?' remains in {dict(residual_q)}")
+    if residual_pua:
+        print(f"  WARNING: private-use characters remain in {dict(residual_pua)}")
     if total == 0:
         sys.exit("ERROR: 0 records produced — aborting without touching roads/ "
                  "(check column mapping for this county).")
