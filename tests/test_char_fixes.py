@@ -5,12 +5,14 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import unicodedata
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from fix_static_roads import fix_row
 from update_addresses import (
     COUNTIES,
     FIX_FIELDS,
@@ -20,6 +22,7 @@ from update_addresses import (
     load_area,
     load_char_fixes,
     load_rare_chars,
+    source_fields,
 )
 
 
@@ -35,6 +38,10 @@ def _block(cp: int) -> str:
         return "擴充 A"
     if 0x20000 <= cp <= 0x2A6DF:
         return "擴充 B"
+    if 0x2A700 <= cp <= 0x2EBEF:
+        return "擴充 C 至 F"
+    if 0x30000 <= cp <= 0x323AF:
+        return "擴充 G 至 H"
     if 0xF900 <= cp <= 0xFAFF or 0x2F800 <= cp <= 0x2FA1F:
         return "相容區"
     return "其他"
@@ -49,7 +56,7 @@ def _in_big5(ch: str) -> bool:
 
 
 def _question_chars(source: str, fixed: str) -> tuple[str, ...]:
-    pat = "".join("(.)" if ch == "?" else re.escape(ch) for ch in source)
+    pat = "".join("(.)" if ch in "?■？" else re.escape(ch) for ch in source)
     m = re.fullmatch(pat, fixed)
     if m is None:
         raise AssertionError(f"{fixed!r} does not keep the known parts of {source!r}")
@@ -72,6 +79,7 @@ class RareCharsTableTest(unittest.TestCase):
             self.assertEqual(r["form"], ch)
             self.assertFalse(_in_big5(ch), ch)
             self.assertFalse(is_private_use(ch), ch)
+            self.assertEqual(unicodedata.normalize("NFC", ch), ch)
             self.assertEqual(r["standard_codepoint"], f"U+{ord(ch):04X}")
             self.assertEqual(r["block"], _block(ord(ch)), ch)
 
@@ -81,7 +89,9 @@ class RareCharsTableTest(unittest.TestCase):
             key = (r["source"], r["form"])
             self.assertNotIn(key, seen, key)
             seen[key] = r["standard"]
-            self.assertIn(r["standard"], self.standard, key)
+            compat = unicodedata.normalize("NFC", r["form"]) == r["standard"] != r["form"]
+            if not compat:
+                self.assertIn(r["standard"], self.standard, key)
             self.assertEqual(r["form_codepoints"],
                              " ".join(f"U+{ord(c):04X}" for c in r["form"]))
             self.assertTrue(r["evidence"] and r["checked_on"], key)
@@ -90,8 +100,12 @@ class RareCharsTableTest(unittest.TestCase):
 class CharFixesTableTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = _rows("char_fixes.csv")
-        self.standard = {r["standard"] for r in _rows("rare_chars.csv")
-                         if r["source"] == "標準"}
+        rare = _rows("rare_chars.csv")
+        self.standard = {r["standard"] for r in rare if r["source"] == "標準"}
+        # Big5 characters whose official spelling is a compatibility
+        # ideograph. The export cannot encode that code point either.
+        self.compat = {r["standard"] for r in rare if r["source"] != "標準"
+                       and unicodedata.normalize("NFC", r["form"]) == r["standard"]}
 
     def test_keys_are_unique_and_fields_known(self) -> None:
         keys = [(r["county"], r["town"], r["field"], r["source_value"]) for r in self.rows]
@@ -103,6 +117,8 @@ class CharFixesTableTest(unittest.TestCase):
     def test_restored_characters_are_in_rare_chars(self) -> None:
         for r in self.rows:
             for ch in _question_chars(r["source_value"], r["fixed_value"]):
+                if ch in self.compat:
+                    continue
                 self.assertIn(ch, self.standard, r["fixed_value"])
                 self.assertFalse(_in_big5(ch), r["fixed_value"])
 
@@ -173,6 +189,32 @@ class ApplyFixesTest(unittest.TestCase):
         apply_char_fixes(fixes, "1000701", parts)
         self.assertEqual(parts["village"], "下廍里")
         self.assertIn(("1000701", parts["village"]), villages)
+
+
+class NormalizeAndStaticFixTest(unittest.TestCase):
+    def test_source_fields_normalize_compatibility_ideographs(self) -> None:
+        cfg = COUNTIES["桃園市"]
+        col = dict(cfg.columns)
+        row = {col["town"]: "6800100", col["village"]: "明德里", col["street"]: "中寧街",
+               col["lane"]: "", col["alley"]: "", col["number"]: "１號"}
+        _, _, street, _, _, number = source_fields(row, col, cfg, {}, {})
+        self.assertEqual(street, "中寧街")
+        self.assertEqual(number, "1號")
+
+    def test_static_row_fix_updates_road_section_lane_and_full_address(self) -> None:
+        fixes = {("1000206", "street", "?後路仁愛新村"): "廍後路仁愛新村",
+                 ("1000212", "lane", "?泉巷"): "温泉巷"}
+        row = {"FULL_ADDR": "宜蘭縣壯圍鄉美城村1鄰?後路仁愛新村5號", "TOWN": "1000206",
+               "ROAD": "?後路仁愛新村", "SECTION": "", "LANE": "", "ALLEY": "", "NUMBER": "5號"}
+        self.assertTrue(fix_row(row, fixes, {}))
+        self.assertEqual(row["ROAD"], "廍後路仁愛新村")
+        self.assertEqual(row["FULL_ADDR"], "宜蘭縣壯圍鄉美城村1鄰廍後路仁愛新村5號")
+        lane = {"FULL_ADDR": "宜蘭縣南澳鄉武塔村6鄰新溪路?泉巷2號", "TOWN": "1000212",
+                "ROAD": "新溪路", "SECTION": "", "LANE": "?泉巷", "ALLEY": "", "NUMBER": "2號"}
+        self.assertTrue(fix_row(lane, fixes, {}))
+        self.assertEqual(lane["FULL_ADDR"], "宜蘭縣南澳鄉武塔村6鄰新溪路温泉巷2號")
+        untouched = dict(lane, LANE="田?巷", FULL_ADDR="x田?巷")
+        self.assertFalse(fix_row(untouched, fixes, {}))
 
 
 if __name__ == "__main__":

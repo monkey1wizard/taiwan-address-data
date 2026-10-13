@@ -22,6 +22,7 @@ import io
 import re
 import ssl
 import sys
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -313,11 +314,18 @@ def load_area(cfg: CountyConfig) -> tuple[dict, dict]:
 
 # ── Missing-character repair ────────────────────────────────────────────────────
 # Government exports write every character outside Big5 as a literal "?".
+# Some sources use "■" or a full-width "？" for a character their own system
+# cannot store.
 # char_fixes.csv restores reviewed values per (county, town, field, value).
 # rare_chars.csv maps each source's own spelling of a rare character (private
 # use code points, "[磘]") to one standard Unicode character.
 
 FIX_FIELDS = ("village", "street", "lane")
+PLACEHOLDERS = "?■？"
+
+
+def has_placeholder(s: str) -> bool:
+    return any(ch in PLACEHOLDERS for ch in s)
 
 
 def is_private_use(ch: str) -> bool:
@@ -383,7 +391,9 @@ def source_fields(row: dict, col: dict, cfg: CountyConfig, name_to_code: dict,
             raise ValueError("unknown district name")
     else:
         tcode = town_code((row.get(col["town"]) or "").strip(), cfg)
-    v = lambda key: apply_variants(row.get(col[key]) or "", variants)
+    # NFC turns CJK compatibility ideographs into the standard character.
+    v = lambda key: unicodedata.normalize(
+        "NFC", apply_variants(row.get(col[key]) or "", variants))
     return (tcode, v("village").strip(), v("street").strip(),
             normalize(v("lane")), normalize(v("alley")), normalize(v("number")))
 
@@ -692,7 +702,7 @@ def run(cfg: CountyConfig) -> None:
 
         for fld, val in (("village", village_name), ("street", road + section),
                          ("lane", lane), ("alley", alley), ("number", number)):
-            if "?" in val:
+            if has_placeholder(val):
                 residual_q[fld] += 1
             if any(is_private_use(ch) for ch in val):
                 residual_pua[fld] += 1
@@ -713,7 +723,7 @@ def run(cfg: CountyConfig) -> None:
           f"({unmatched_villages/max(total,1)*100:.2f}%)")
     print(f"  char fixes applied: {dict(fixed) or 0}")
     if residual_q:
-        print(f"  WARNING: '?' remains in {dict(residual_q)}")
+        print(f"  WARNING: '?', '■' or '？' remains in {dict(residual_q)}")
     if residual_pua:
         print(f"  WARNING: private-use characters remain in {dict(residual_pua)}")
     if total == 0:
