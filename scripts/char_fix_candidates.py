@@ -20,8 +20,17 @@ keep the source section. A street such as "■魚坑路瑞興新邨" is matched 
 leading official road name when the rest has no placeholder. Nothing is
 written to char_fixes.csv: the output is for review.
 
+With --legacy, values that have no official match (lanes, community names)
+are matched against the 2016 import (commit LEGACY_COMMIT) instead. Each row
+is joined to the nearest 2016 door plate of the same county within 10 m. A
+value is "unique" only when every joined row gives the same 2016 value and
+every character at a placeholder position is outside Big5 and not a
+private-use code point. The owner accepted this weaker evidence on
+2026-10-13.
+
 Usage:
     python scripts/char_fix_candidates.py 彰化縣 屏東縣 --out data/work/charfix
+    python scripts/char_fix_candidates.py 彰化縣 --legacy --out data/work/charfix
 """
 
 import argparse
@@ -42,6 +51,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_addresses as ua  # noqa: E402
 
 RIS_YEAR = 115
+LEGACY_COMMIT = "c19cba2a9"  # 2016-03-05 import of every road file
+LEGACY_RADIUS_M = 10
 # Counties whose roads/ files are not produced by update_addresses.py. Their
 # candidates come from the tracked road files instead of a government source.
 STATIC_COUNTIES = {
@@ -232,10 +243,68 @@ def candidates(cfg, s, out: Path, rare: dict, static: bool = False) -> list[dict
     return found
 
 
+def _rows_at(rev: str, code: str) -> list[dict]:
+    data = subprocess.run(["git", "archive", rev, "roads"], cwd=ua.ROOT,
+                          capture_output=True, check=True).stdout
+    rows = []
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        for m in tf:
+            name = m.name.split("/")[-1]
+            if m.isfile() and name.startswith(f"{code}-") and name.endswith(".csv"):
+                rows += list(csv.DictReader(io.StringIO(tf.extractfile(m).read().decode("utf-8"))))
+    return rows
+
+
+def legacy_candidates(cfg, unresolved: set[tuple[str, str, str]]) -> list[dict]:
+    """Match unresolved (town, field, value) keys of one county against the
+    2016 import by location. Uses the current road files for coordinates."""
+    grid: dict[tuple[int, int], list] = {}
+    for r in _rows_at(LEGACY_COMMIT, cfg.code):
+        try:
+            x, y = float(r["X"]), float(r["Y"])
+        except ValueError:
+            continue
+        grid.setdefault((round(x * 1000), round(y * 1000)), []).append(
+            (x, y, {"street": r["ROAD"] + r["SECTION"], "lane": r["LANE"]}))
+    seen: dict[tuple[str, str, str], Counter] = {k: Counter() for k in unresolved}
+    for r in _rows_at("HEAD", cfg.code):
+        for fld, val in (("street", r["ROAD"] + r["SECTION"]), ("lane", r["LANE"])):
+            key = (r["TOWN"], fld, val)
+            if key not in seen:
+                continue
+            x, y = float(r["X"]), float(r["Y"])
+            best = None
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for cx, cy, old in grid.get((round(x * 1000) + dx, round(y * 1000) + dy), ()):
+                        d = ((cx - x) * 101_000) ** 2 + ((cy - y) * 111_000) ** 2
+                        if d <= LEGACY_RADIUS_M ** 2 and (best is None or d < best[0]):
+                            best = (d, old[fld])
+            seen[key][best[1] if best else ""] += 1
+    found = []
+    for (tcode, fld, val), hits in sorted(seen.items()):
+        ok = set()
+        for old in hits:
+            m = re.fullmatch(_pattern(val), old) if old else None
+            if m and _ok(m.groups()):
+                ok.add(unicodedata.normalize("NFC", old))
+        joined = sum(n for old, n in hits.items() if old)
+        status = "unique" if len(ok) == 1 and all(
+            unicodedata.normalize("NFC", o) in ok for o in hits if o) else (
+            "ambiguous" if ok else "none")
+        found.append(dict(county=cfg.code, town=tcode, field=fld, source_value=val,
+                          rows=sum(hits.values()), joined=joined, status=status,
+                          candidates="|".join(sorted(ok)),
+                          legacy_values="|".join(f"{o}:{n}" for o, n in hits.most_common())))
+    return found
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("counties", nargs="+")
     ap.add_argument("--out", default=str(ua.ROOT / "data" / "work" / "charfix"))
+    ap.add_argument("--legacy", action="store_true",
+                    help="match values still holding a placeholder against the 2016 import")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -250,6 +319,21 @@ def main() -> None:
         print(f"  SHA256 {hashlib.sha256(raw).hexdigest()}")
         return raw
     ua.download_bytes = cached_download
+    if args.legacy:
+        found = []
+        for name in args.counties:
+            cfg = STATIC_COUNTIES.get(name) or ua.COUNTIES[name]
+            keys = {(r["TOWN"], fld, val) for r in _rows_at("HEAD", cfg.code)
+                    for fld, val in (("street", r["ROAD"] + r["SECTION"]), ("lane", r["LANE"]))
+                    if ua.has_placeholder(val)}
+            found += legacy_candidates(cfg, keys)
+        path = out / "legacy_candidates.csv"
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(found[0].keys()) if found else ["county"])
+            w.writeheader()
+            w.writerows(found)
+        print(f"wrote {path}")
+        return
     s = ua._session()
     rare = ua.load_rare_chars()
     found = []
