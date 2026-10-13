@@ -865,8 +865,6 @@ def run(cfg: CountyConfig) -> None:
                     parts["village"], parts["street"], parts["lane"], parts["number"],
                     parts["neighborhood"])
             village = villages.get((tcode, village_name), tcode + "-000")
-            if village == tcode + "-000":
-                unmatched_villages += 1
 
             if cfg.addr_col:
                 road, section, lane, alley, number = parse_address(
@@ -882,6 +880,9 @@ def run(cfg: CountyConfig) -> None:
                 village = villages.get((tcode, village_name), tcode + "-000")
             else:
                 road, section = split_section(street)
+            # Count after the addr_col path has applied its char fixes.
+            if village == tcode + "-000":
+                unmatched_villages += 1
 
             x_raw = (row.get(col["x"]) or "").strip()
             y_raw = (row.get(col["y"]) or "").strip()
