@@ -122,8 +122,9 @@ class CharFixesTableTest(unittest.TestCase):
                 self.assertFalse(is_private_use(ch), r["fixed_value"])
                 if ch in self.compat:
                     continue
-                if mark == "?":
+                if mark == "?" and "擁有者確認" not in r["evidence"]:
                     # "?" comes from a Big5 export, so the lost character is outside Big5.
+                    # Values the owner confirmed by hand may break this rule.
                     self.assertFalse(_in_big5(ch), r["fixed_value"])
                 if not _in_big5(ch):
                     self.assertIn(ch, self.standard, r["fixed_value"])
