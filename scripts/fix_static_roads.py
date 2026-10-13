@@ -86,6 +86,13 @@ def fix_county(code: str) -> None:
             changed_rows += fix_row(row, fixes, variants)
             new[f"{code}-{ua.safe_filename(row['ROAD'])}.csv"].append(row)
 
+    dedupe_removed = 0
+    for name in list(new):
+        recs, n = ua.dedupe_door_plates([[r[k] for k in ua.CSV_HEADER] for r in new[name]])
+        if n:
+            new[name] = [dict(zip(ua.CSV_HEADER, rec)) for rec in recs]
+            dedupe_removed += n
+
     written = [n for n in new if n not in old or new[n] != old_rows(code, n)]
     removed = [n for n in old if n not in new]
     for name in written:
@@ -104,7 +111,7 @@ def fix_county(code: str) -> None:
                for rows in new.values() for r in rows)
     print(f"{code}: {changed_rows} rows changed, {len(written)} files written, "
           f"{len(removed)} files removed, {left} rows still have a placeholder "
-          f"in ROAD/SECTION/LANE")
+          f"in ROAD/SECTION/LANE, {dedupe_removed} door-plate duplicates removed")
     for name in sorted(set(written) - set(old)):
         print(f"  + {name}")
     for name in sorted(removed):

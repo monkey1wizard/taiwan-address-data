@@ -19,6 +19,7 @@ import argparse
 import csv
 import datetime
 import io
+import math
 import re
 import ssl
 import sys
@@ -432,6 +433,86 @@ def _dist_sort_key(d: dict) -> tuple[int, int]:
 
 # ── Update-log freshness (drives --updated-only) ────────────────────────────────
 
+_PLATE_RE = re.compile(r"^(.*?號)(.*)$")
+_FLOOR_RE = re.compile(
+    r"^(?:([一二三四五六七八九十百]+|[0-9０-９]+)樓)?(?:之([0-9０-９]+))?$")
+_CN_DIGITS = {c: i for i, c in enumerate("一二三四五六七八九", 1)}
+DEDUPE_MIN_METRES = 10.0
+
+
+def _floor_value(text: str) -> int:
+    """Floor number from Chinese numerals (二, 十二, 二十, 一百…) or digits."""
+    text = text.strip()
+    if not text:
+        return 0
+    if all(c.isdigit() for c in text):
+        return int(unicodedata.normalize("NFKC", text))
+    total = cur = 0
+    for ch in text:
+        if ch in _CN_DIGITS:
+            cur = _CN_DIGITS[ch]
+        elif ch == "十":
+            total += (cur or 1) * 10
+            cur = 0
+        elif ch == "百":
+            total += (cur or 1) * 100
+            cur = 0
+    return total + cur
+
+
+def _plate_split(number: str) -> tuple[str, tuple[int, int] | None]:
+    """(plate base, (floor, 之 number)); floor is None for rows without a floor
+    (no 號, a note suffix, or an empty suffix). Non-floor rows use the whole
+    NUMBER as base."""
+    m = _PLATE_RE.match(number)
+    if m:
+        fm = _FLOOR_RE.match(m.group(2))
+        if fm:
+            if not m.group(2):
+                return m.group(1), None
+            floor = _floor_value(fm.group(1)) if fm.group(1) else 0
+            sub = _floor_value(fm.group(2)) if fm.group(2) else 0
+            return m.group(1), (floor, sub)
+    return number, None
+
+
+def dedupe_door_plates(records: list[list[str]]) -> tuple[list[list[str]], int]:
+    """Keep one row per door plate: drop floor rows (and exact repeats) that sit
+    within 10 m of an already kept row of the same plate. Records are in
+    CSV_HEADER order; returns (kept rows in original order, removed count)."""
+    idx = {name: CSV_HEADER.index(name) for name in
+           ("TOWN", "VILLAGE", "NEIGHBORHOOD", "ROAD", "SECTION", "LANE",
+            "ALLEY", "NUMBER", "X", "Y")}
+    key_fields = ("TOWN", "VILLAGE", "NEIGHBORHOOD", "ROAD", "SECTION", "LANE", "ALLEY")
+    groups: dict[tuple, list[tuple[tuple, int]]] = defaultdict(list)
+    for pos, rec in enumerate(records):
+        base, floor = _plate_split(rec[idx["NUMBER"]])
+        key = tuple(rec[idx[k]] for k in key_fields) + (base,)
+        # no-floor rows first, then by floor, then 之 number, then original order
+        prio = (0, 0, 0, pos) if floor is None else (1, floor[0], floor[1], pos)
+        groups[key].append((prio, pos))
+    drop: set[int] = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        kept: list[tuple[float, float]] = []
+        for _, pos in sorted(members):
+            try:
+                lon = float(records[pos][idx["X"]])
+                lat = float(records[pos][idx["Y"]])
+            except (TypeError, ValueError):
+                continue  # unparsable coordinates are always kept
+            for klon, klat in kept:
+                dx = (lon - klon) * 111320 * math.cos(math.radians((lat + klat) / 2))
+                dy = (lat - klat) * 110574
+                if math.hypot(dx, dy) < DEDUPE_MIN_METRES:
+                    drop.add(pos)
+                    break
+            else:
+                kept.append((lon, lat))
+    return [r for i, r in enumerate(records) if i not in drop], len(drop)
+
+
 def _read_update_log() -> dict[str, dict[str, str]]:
     """Read update_log.csv into {code: row_dict}. Missing or malformed file ->
     {} (treated the same as "no baseline yet" by callers)."""
@@ -787,6 +868,15 @@ def run(cfg: CountyConfig) -> None:
     if total > 1000 and (empty_road_records / total) > 0.7:
         sys.exit(f"ERROR: fresh pull has {empty_road_records:,}/{total:,} records with empty road "
                  f"({empty_road_records/total*100:.1f}%) — aborting WITHOUT touching {cfg.name}'s roads/.")
+
+    # Door-plate dedupe: one row per plate (floors of a building share a point).
+    # Runs after the guards so they compare the pre-dedupe total.
+    dedupe_removed = 0
+    for road in road_groups:
+        road_groups[road], n = dedupe_door_plates(road_groups[road])
+        dedupe_removed += n
+    total = sum(len(v) for v in road_groups.values())
+    print(f"  door-plate dedupe removed {dedupe_removed:,} rows ({total:,} kept)")
 
     print(f"Removing old {cfg.code}-*.csv…")
     removed = sum(1 for f in ROADS_DIR.glob(f"{cfg.code}-*.csv")
