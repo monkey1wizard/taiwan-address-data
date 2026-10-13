@@ -61,6 +61,13 @@ def fix_row(row: dict, fixes: dict, variants: dict) -> bool:
     if new_lane is not None:
         row["FULL_ADDR"] = row["FULL_ADDR"].replace(row["LANE"], new_lane, 1)
         row["LANE"] = new_lane
+    prefix = row["ROAD"] + row["SECTION"] + row["LANE"] + row["ALLEY"]
+    new_number = fixes.get((town, "number", prefix + row["NUMBER"]))
+    if new_number is not None and new_number.startswith(prefix):
+        new_number = new_number[len(prefix):]
+        row["FULL_ADDR"] = row["FULL_ADDR"][::-1].replace(
+            row["NUMBER"][::-1], new_number[::-1], 1)[::-1]
+        row["NUMBER"] = new_number
     return row != before
 
 

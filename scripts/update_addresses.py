@@ -370,13 +370,22 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
                      parts: dict[str, str]) -> list[str]:
     """Replace village/street/lane values listed in char_fixes.csv for this
     town. Values not listed are left as they are, "?" included. Returns the
-    fields that were replaced."""
+    fields that were replaced.
+
+    A "number" fix belongs to one door plate, so its key is street + lane +
+    alley + number and it only changes the number part."""
     applied = []
     for fld in FIX_FIELDS:
         new = fixes.get((tcode, fld, parts[fld]))
         if new is not None:
             parts[fld] = new
             applied.append(fld)
+    if "number" in parts:
+        prefix = parts["street"] + parts["lane"] + parts.get("alley", "")
+        new = fixes.get((tcode, "number", prefix + parts["number"]))
+        if new is not None and new.startswith(prefix):
+            parts["number"] = new[len(prefix):]
+            applied.append("number")
     return applied
 
 
@@ -671,11 +680,12 @@ def run(cfg: CountyConfig) -> None:
             else:
                 tcode, village_name, street, lane, alley, number = source_fields(
                     row, col, cfg, name_to_code, variants)
-                parts = {"village": village_name, "street": street, "lane": lane}
+                parts = {"village": village_name, "street": street, "lane": lane,
+                         "alley": alley, "number": number}
                 for fld in apply_char_fixes(fixes, tcode, parts):
                     fixed[fld] += 1
-                village_name, street, lane = (parts["village"], parts["street"],
-                                              parts["lane"])
+                village_name, street, lane, number = (
+                    parts["village"], parts["street"], parts["lane"], parts["number"])
             village = villages.get((tcode, village_name), tcode + "-000")
             if village == tcode + "-000":
                 unmatched_villages += 1
@@ -686,10 +696,11 @@ def run(cfg: CountyConfig) -> None:
             if cfg.addr_col:
                 road, section, lane, alley, number = parse_address(
                     row.get(cfg.addr_col) or "")
-                parts = {"village": village_name, "street": road + section, "lane": lane}
+                parts = {"village": village_name, "street": road + section, "lane": lane,
+                         "alley": alley, "number": number}
                 for fld in apply_char_fixes(fixes, tcode, parts):
                     fixed[fld] += 1
-                village_name, lane = parts["village"], parts["lane"]
+                village_name, lane, number = parts["village"], parts["lane"], parts["number"]
                 road, section = split_section(parts["street"])
                 village = villages.get((tcode, village_name), tcode + "-000")
             else:
