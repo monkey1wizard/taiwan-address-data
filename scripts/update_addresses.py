@@ -113,7 +113,7 @@ COUNTIES = {
     "高雄市": CountyConfig("高雄市", "64", 172400, _ZH, pick="latest"),
 
     # ── 縣市 ──────────────────────────────────────────────────────────────────
-    "新竹縣": CountyConfig("新竹縣", "10004", 172380, _zh(street="街或路段")),
+    "新竹縣": CountyConfig("新竹縣", "10004", 172380, _zh(street="街或路段"), fmt="xlsx"),
     "苗栗縣": CountyConfig("苗栗縣", "10005", 176511, _zh(street="街、路段")),
     "彰化縣": CountyConfig("彰化縣", "10007", 170727, _zh(street="街、路段")),
     "嘉義縣": CountyConfig("嘉義縣", "10010", 172873, _zh(street="街、路段")),
@@ -122,7 +122,8 @@ COUNTIES = {
                           _zh(street="街、路段", number="號樓",
                               x="橫坐標", y="縱坐標")),
     "花蓮縣": CountyConfig("花蓮縣", "10015", 175221, _ZH),
-    "澎湖縣": CountyConfig("澎湖縣", "10016", 170852, _zh(street="街_路段")),
+    "澎湖縣": CountyConfig("澎湖縣", "10016", 170852, _zh(street="街_路段"),
+                          epsg="EPSG:3825"),
 
     # 新竹市: has town code + village, but road/lane/alley/number are merged into a
     # single 地址 field — parse it with addr_col instead of the per-part columns.
@@ -136,7 +137,8 @@ COUNTIES = {
     # (雲林 publishes the dataset as several XLSX parts; all are merged.)
     "雲林縣": CountyConfig("雲林縣", "10009", 166201,
                           _zh(street="街_路段"), fmt="xlsx", multi=True),
-    "金門縣": CountyConfig("金門縣", "09020", 171571, _ZH, fmt="xlsx"),
+    "金門縣": CountyConfig("金門縣", "09020", 171571, _ZH, fmt="xlsx",
+                          epsg="EPSG:3825"),
 
     # 基隆市: not on data.gov.tw. Civil-affairs dept publishes a monthly CSV whose
     # attachment URL changes each month, so scrape the landing page for the link.
@@ -152,6 +154,7 @@ COUNTIES = {
 
     # ── 尚未支援 ──────────────────────────────────────────────────────────────
     # 未在 data.gov.tw 發布且待查自家平台: 嘉義市、南投縣、宜蘭縣、連江縣
+    # 連江縣 needs epsg="EPSG:3825" (TM2 119°, same zone as 澎湖/金門) when added
 }
 
 
