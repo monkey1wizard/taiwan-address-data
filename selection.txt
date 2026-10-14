@@ -1,5 +1,2 @@
-4/17 counties selected:
-  臺北市  (updated)
-  桃園市  (updated)
-  澎湖縣  (updated)
+1/18 counties selected:
   基隆市  (no-freshness-api)
