@@ -1,0 +1,4 @@
+# Keep CSV files LF in the repository on every platform. Windows has
+# core.autocrlf, the GitHub runner does not, so without this each runner
+# commit flipped the line endings of every file it wrote.
+*.csv text eol=lf
