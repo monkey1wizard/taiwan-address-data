@@ -1,6 +1,58 @@
 # 政府資料更新
 
-本文件說明更新器目前設定的政府門牌資料來源、本機命令、缺字修正和 GitHub Actions 流程。來源平台的現行規則與資料發布頻率沒有外查，表內只列程式設定。
+本文件供維護者選擇更新命令、確認寫入範圍並判讀失敗結果。內容依本機程式與 workflow 設定整理，沒有重新查證外部來源可用性、發布頻率或 GitHub 平台政策。
+
+## 執行前確認
+
+在專案根目錄執行命令。先確認工作樹中的路檔、`road.csv`、`update_log.csv` 是否有尚未保存的變更，再選擇更新範圍。
+
+更新器需要 `requests`、`pyproj` 與 `openpyxl`，其中 `openpyxl` 用來讀取 XLSX。以下安裝命令會連線取得套件並修改 Python 環境：
+
+```bash
+python -m pip install requests pyproj openpyxl
+```
+
+## 本機更新
+
+| 命令 | 連線與寫檔 | 選取及失敗行為 |
+| --- | --- | --- |
+| `python scripts/update_addresses.py --list` | 不連線，不寫資料檔 | 列出程式設定的縣市。 |
+| `python scripts/update_addresses.py --updated-only --dry-run` | 連線查更新資訊，不下載地址檔，不寫資料檔 | 列出預計選取的縣市及理由。 |
+| `python scripts/update_addresses.py 新北市` | 下載來源並寫入新北市資料 | 不比較來源日期，直接處理指定縣市。 |
+| `python scripts/update_addresses.py --updated-only` | 查更新資訊，再下載及寫入選取的縣市 | 單一縣市失敗後繼續其他縣市，最後有失敗就以非零結束碼退出。已成功縣市的本機檔案仍保留。 |
+| `python scripts/update_addresses.py --all` | 下載及寫入所有設定縣市 | 按設定逐縣市更新，遇到錯誤停止。先前已完成的縣市不會因此還原。 |
+
+`--dry-run` 只在 `--updated-only` 分支生效。不要把它加在指定縣市或 `--all` 後面，期待阻止寫入。表中的命令應分別使用，不混用選取參數。
+
+`--updated-only` 將 API 的 `modifiedDate` 截至日期，與 `update_log.csv` 的本機執行日期比較。選取理由如下：
+
+| 理由 | 意義 |
+| --- | --- |
+| `new` | 本機沒有該縣市的更新日期。 |
+| `updated` | API 日期晚於本機執行日期。 |
+| `probe-failed` | 未取得可用的更新日期，仍選取該縣市。 |
+| `no-freshness-api` | 程式未設定可查更新日期的資料集 API，仍選取該縣市。 |
+
+選取結果不是來源內容有變的證明。正式更新會重新查詢，可能與先前的 dry-run 不同。
+
+## 寫入流程與檢查
+
+更新器下載並處理來源後，先執行下列檢查，再去重。檢查無法證明來源完整或每筆座標正確。
+
+| 條件 | 結果 |
+| --- | --- |
+| 新資料處理後為 0 列 | 停止。 |
+| 舊資料超過 1,000 列，且新資料少於舊資料的 60% | 停止。 |
+| 舊路檔超過 10 個，新資料卻只產生至多 1 個道路群組 | 停止。 |
+| 新資料超過 1,000 列，且超過 70% 沒有路名 | 停止。 |
+
+檢查使用去重前的列數。`update_log.csv` 記錄去重後的列數，去重規則見[資料格式](data-format.md#門牌去重規則)。
+
+通過檢查後，新路檔先寫入 `roads/.staging-{縣市代碼}/`。全部寫完後，程式將舊路檔移到 `roads/.old-{縣市代碼}/`，再移入新檔。成功後刪除兩個暫存目錄，再重建 `road.csv` 並更新 `update_log.csv`。
+
+移動新舊檔案時若發生可捕捉的例外，程式會嘗試刪除已移入的新檔並還原舊檔。若程序被強制終止，或還原本身失敗，仍可能留下部分成果。道路索引與更新紀錄在路檔替換之後寫入，因此也可能只完成部分步驟。
+
+座標文字依[資料格式](data-format.md#座標與精度)保留小數 9 位，不保證跨平台完全相同。`.gitattributes` 將 Git 儲存的 CSV 換行固定為 LF，這與座標運算差異是兩件事。
 
 ## 更新器設定
 
@@ -31,93 +83,82 @@
 
 臺中市的資料集檔案是一張清單，列出每月的門牌 CSV，檔案放在 Google Drive。更新器從清單挑出最新一筆「臺中市1xx年x月GIS門牌號碼」，先取得 Google Drive 的確認頁讀出 `uuid`，再向 `drive.usercontent.google.com/download` 下載。如果拿到的是網頁而不是檔案，臺中市更新失敗，現有路檔不變。是否有新資料仍依資料集 169806 的 `modifiedDate` 判斷。
 
-程式透過 `https://{網域}/api/v2/rest/dataset/{資料集編號}` 取得下載資訊，並在設定的政府平台間嘗試查詢。表內編號不是直接下載網址。
+程式經由 `https://{網域}/api/v2/rest/dataset/{資料集編號}` 取得下載資訊，並在設定的政府平台間嘗試查詢。表內編號不是直接下載網址。
 
 現有路檔涵蓋 22 個縣市。宜蘭縣、南投縣、連江縣與嘉義市有既有路檔，但不在這個更新器的設定中，都是 2016 年匯入的資料。未設定更新器不代表政府沒有提供資料。
 
-## 本機更新
+## 本機維護
 
-安裝 Python 套件：
+以下命令不下載來源資料，但會改寫本機檔案。
 
-```bash
-pip install requests pyproj openpyxl
-```
+| 命令 | 寫入範圍 | 使用條件 |
+| --- | --- | --- |
+| `python scripts/normalize_roads.py 63 65` | 指定縣市的路檔及 `update_log.csv` | 對現有路檔套用去重與座標格式。 |
+| `python scripts/normalize_roads.py --all` | 更新紀錄所列縣市的路檔及 `update_log.csv` | 選取範圍完全依當下的 `update_log.csv`，不是固定縣市清單。 |
+| `python scripts/build_road_index.py` | `road.csv` | 從工作樹實際存在的路檔重建索引。 |
 
-`openpyxl` 用於 XLSX 資料。以下第一個命令只列出本機設定，不連線、不寫檔。其餘三個會下載資料並改寫檔案：
+`normalize_roads.py` 更新已有紀錄的 `records`，保留 `last_updated`。沒有列在更新紀錄內的縣市，必須直接指定代碼。它不移除或重新命名路檔，因此不需要重建道路索引。
 
-```bash
-python scripts/update_addresses.py --list
-python scripts/update_addresses.py 新北市
-python scripts/update_addresses.py --updated-only
-python scripts/update_addresses.py --all
-```
-
-`--list` 列出更新器設定。指定縣市只處理該縣市。`--all` 依設定逐縣市更新，遇到錯誤會停止。`--updated-only` 先查更新資訊，再逐縣市處理，單一縣市的錯誤會記錄後繼續。
-
-`--updated-only` 將政府 API 的 `modifiedDate` 與 `update_log.csv` 的本機執行日期比較。更新資訊查詢失敗，或縣市沒有可用的更新日期時，該縣市仍會被選取。選取理由包括 `new`、`updated`、`probe-failed` 和 `no-freshness-api`。
-
-如需先看選取結果，可執行 `python scripts/update_addresses.py --updated-only --dry-run`。它不下載地址檔，但會連線查詢更新資訊。`--dry-run` 只在 `--updated-only` 分支生效，不能用來保護指定縣市或 `--all` 的更新。
-
-更新器先下載並處理資料，再執行現有檢查。通過後，新路檔先寫到 `roads/.staging-{縣市代碼}/`。全部寫完後，才把舊路檔移到 `roads/.old-{縣市代碼}/`，再把新檔移入 `roads/`，最後刪除兩個暫存目錄。移動過程失敗時，會刪除已移入的新檔並還原舊檔。替換完成後才更新道路索引及更新紀錄。若程序在移動檔案的那幾秒內被強制終止，仍可能留下部分成果，要依暫存目錄的內容判斷。
-
-替換路檔前的主要檢查如下，這些檢查不能證明政府資料完整或每筆座標正確：
-
-- 新資料處理後為 0 列時停止。
-- 舊資料超過 1,000 列，且新資料少於舊資料的 60% 時停止。
-- 舊路檔超過 10 個，新資料卻只產生至多 1 個道路群組時停止。
-- 新資料超過 1,000 列，且超過 70% 沒有路名時停止。
-
-通過檢查後，更新器才對每個門牌去重，規則見[資料格式](data-format.md)的「一個門牌一列」。檢查使用去重前的列數，`update_log.csv` 記錄去重後的列數。要對現有路檔套用去重與座標位數而不重新下載，可執行 `python scripts/normalize_roads.py 63 65`。這個腳本的 `--all` 只處理 `update_log.csv` 裡的縣市，不含臺中、宜蘭、南投、連江與嘉義市，處理這些縣市要直接列出代碼。
-
-在 Windows 執行時，Git 追蹤但檔名含 Windows 不允許字元的路檔不會出現在工作樹。更新器刪不到這類舊檔，重建的 `road.csv` 也會少列。目前追蹤的路檔已沒有這類檔名。日後若再出現，要以 `git rm --cached --sparse` 移除舊檔，並以 Git 追蹤的檔案清單重建 `road.csv`。
-
-座標固定寫成小數 9 位，所以 Windows 與 Linux 重跑同一份來源會得到相同的座標文字。
+在 Windows 上，Git 追蹤但檔名含不允許字元的路檔可能無法取出。此時，工作樹掃描會漏檔。先核對 Git 追蹤清單與工作樹，確認替代路檔完整後，才處理舊追蹤項目及索引。需要移除無法取出的舊項目時，使用 `git rm --cached --sparse` 指定該路徑，並依核對後的追蹤清單重建索引。不要把缺少檔案當成空資料。
 
 ## 缺字修正
 
-更新器在查村里代碼前套用 `char_fixes.csv` 與 `rare_chars.csv`，欄位規則見[資料格式](data-format.md)。處理後會列出套用數、刪除列數，以及仍含「?」「■」「？」或私用區字元的欄位數。殘留只會警告，不會停止更新。
+缺字規則與套用順序見[資料格式](data-format.md#缺字與字碼)。更新器會列出套用數、刪除列數，以及仍含「?」「■」「？」或私用區字元的欄位數。殘留只會警告，不會停止更新。
 
-新增對照時，先產生候選再人工審查。候選不會自動寫入對照表：
+新增對照前，先產生候選供人工審查。以下命令會下載來源，並把候選檔寫到指定目錄，不會自動修改對照表：
 
 ```bash
 python scripts/char_fix_candidates.py 彰化縣 屏東縣 --out data/work/charfix
 python scripts/char_fix_candidates.py 彰化縣 --legacy --out data/work/charfix
 ```
 
-第一個命令下載來源，並與國土測繪中心村里清單、戶政司路名清單比對。只有同鄉鎮唯一相符時才標為 `unique`。「?」位置的字必須不在 Big5，「■」與「？」位置只排除私用區字元。第二個命令改以 2016 年路檔同位置比對，證據較弱，只在擁有者接受時使用。
+第一個命令與國土測繪中心村里清單、戶政司路名清單比對。同鄉鎮只有一個相符值時才標為 `unique`。「?」位置的字必須不在 Big5，「■」與「？」位置只排除私用區字元。候選標記不能代替人工核對。
 
-不經過更新器的宜蘭縣與南投縣，以下列命令把對照表直接套用到路檔：
+第二個命令以 2016 年路檔同位置比對，證據較弱，只在擁有者接受時使用。每筆採用值仍須留下依據。
+
+若要直接修正不經過更新器的宜蘭縣與南投縣，可使用：
 
 ```bash
 python scripts/fix_static_roads.py 10002 10008
 ```
 
-此腳本從 Git `HEAD` 讀取路檔，依修正後的路名重新分檔，並移除舊檔。執行後要重建 `road.csv`。
+這個命令從 Git `HEAD` 讀取路檔，套用字元、路名、巷名、號欄及刪除等既有規則，重新分檔並移除舊檔。它不支援更新器的 `area`、`plate_*` 或含村里與鄰的單一門牌鍵。執行前必須確認指定路檔沒有要保留的未提交變更。處理無法取出的舊檔時，程式也可能修改 Git 索引。
 
-修改對照表後先執行測試，通過後才提交：
+完成後，先核對路檔變更，再重建 `road.csv`。不要假設此腳本會更新 `update_log.csv`。
+
+修改對照表後，先執行合成資料測試，再審查資料差異：
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-`tests/test_supplements.py` 需要 `pyarrow`。
+完整測試需要 `pyarrow`，供 `tests/test_supplements.py` 使用。測試結果不能代替真實資料驗收。
 
 ## GitHub Actions
 
-設定位於 [monthly-update.yml](../.github/workflows/monthly-update.yml) 與 [keepalive.yml](../.github/workflows/keepalive.yml)。每月更新 workflow 設定在每月 5 日執行，並可手動觸發。排程是否準時執行依賴 GitHub Actions。本文件沒有查證 GitHub 目前的排程政策或執行限制。
+[monthly-update.yml](../.github/workflows/monthly-update.yml)設定每月 5 日執行，也可手動觸發。[keepalive.yml](../.github/workflows/keepalive.yml)使用第三方 Action 執行每週保活。這些是本機設定，不保證平台會準時執行，也不代表本次已驗證第三方行為。
 
-workflow 先執行 `--updated-only --dry-run`，記下預計更新的縣市。若手動執行時勾選 `dry_run`，會跳過正式更新及提交，但仍會嘗試建立摘要 Issue。沒有勾選時，才會執行 `--updated-only`。手動執行時若在 `county` 填入縣市名稱，例如臺中市，正式更新只跑該縣市，不看來源是否較新。前面的 dry-run 選取步驟仍照常執行，摘要的縣市清單不代表實際更新的縣市。正式更新會重新查詢，因此可能與前一步列出的縣市不同。
+月更新先執行 `--updated-only --dry-run`，將選取結果寫到執行環境的 `selection.txt`。手動參數決定後續行為：
 
-更新步驟設為 `continue-on-error`，讓摘要 Issue 仍會建立。只要有一個縣市失敗，更新器就以非零結束碼退出，workflow 不檢查差異也不提交，已完成縣市的成果一併捨棄，下次執行再重試。最後一步會使工作標示失敗。
+| 手動參數 | 正式更新與提交 | 摘要 |
+| --- | --- | --- |
+| 勾選 `dry_run` | 跳過正式更新與提交 | 仍嘗試建立並關閉摘要 Issue。 |
+| 未勾選 `dry_run`，`county` 留空 | 執行 `--updated-only` | 列出前一步的預計選取結果。 |
+| 未勾選 `dry_run`，填寫 `county` | 只更新指定縣市，不比較來源日期 | 前一步仍列出一般選取結果，不代表實際更新範圍。 |
 
-通知內容中的 `PUSHED` 取自是否偵測到檔案差異，不是 push 成功證明。更新器失敗時沒有檢查差異，摘要顯示為 n/a。推送失敗時 workflow 會嘗試抓取遠端提交、rebase 後重推，最多嘗試推送 3 次。rebase 若失敗會中止，需要檢查失敗原因。
+更新步驟設為 `continue-on-error`，讓後續摘要步驟仍可執行。若更新器失敗，workflow 跳過差異檢查與提交，最後將工作標示為失敗。已成功縣市的檔案只留在該次執行環境，不會由這個流程提交。本機直接執行更新器時，已寫入的成果則仍在工作樹。
 
-workflow 也會嘗試建立並關閉一筆 Issue 作為摘要。這不保證使用者會收到電子郵件。每週保活設定使用第三方 Action，設定來源見 YAML。本次未查證其外部行為或 GitHub 平台規則。
+只有更新器成功且偵測到差異時，workflow 才會提交及推送。推送失敗後會抓取遠端提交並執行 rebase，最多嘗試推送 3 次。rebase 失敗時中止。
 
-## 失敗時
+摘要中的 `PUSHED` 取自差異檢查結果，不是推送成功證明。未執行差異檢查時顯示為 n/a。摘要 Issue 的建立或關閉可能失敗，也不保證使用者收到電子郵件。
 
-- 查閱 Actions 執行記錄中的選取理由、更新器輸出及最後失敗步驟。
-- 若更新器失敗，先確認路檔、`road.csv`、`update_log.csv` 是否只完成部分更新，再決定如何處理。
-- 若推送失敗，確認遠端分支狀態後再安排重跑或人工處理。不要假設失敗縣市以外的檔案沒有變更。
+2026-10-14 的[門牌與村里紀錄](records/2026-10-14-門牌與村里.md)記載臺中市兩次 Actions 執行成功。那是既有驗證，本次文件重寫沒有重新觸發 workflow。
 
-2026-10-13 在本機重跑過多個縣市，命令、雜湊與結果見各份[執行紀錄](records/)。GitHub workflow、通知與發布沒有在本機執行。已知問題見[已知問題](known-issues.md)。
+## 失敗處理
+
+1. 檢視本機輸出或 Actions 記錄，確認選取理由、失敗縣市與最後完成的步驟。
+2. 若本機更新中斷，核對路檔、暫存目錄、`road.csv` 與 `update_log.csv`。先保留現況，再決定還原或重跑。
+3. 若 Actions 更新失敗，確認提交步驟是否跳過。若推送失敗，另外確認遠端分支狀態，不以摘要的 `PUSHED` 判定成功。
+4. 完成原因確認後再重跑。不要假設其他縣市或先前步驟都沒有寫入。
+
+資料品質限制見[已知問題](known-issues.md)，各次命令、雜湊與結果見[執行紀錄](records/)。

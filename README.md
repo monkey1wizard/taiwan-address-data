@@ -1,34 +1,45 @@
 # 臺灣門牌地址查詢
 
-本專案提供以道路分檔的政府門牌座標資料，供程式依地址查詢座標。資料有縣市代碼、道路及門牌欄位，詳細格式見[資料格式](docs/data-format.md)。程式碼採 BSD License。
+本專案提供政府門牌座標資料，供程式依地址查詢座標。資料按縣市與道路分成 CSV，以下稱為「路檔」。程式碼採 BSD License。資料來源與使用限制見下方說明。
 
-## 使用
+## 取得與查詢
 
-`roads/` 存放道路 CSV，`road.csv` 是查詢用道路索引。可直接下載本專案檔案，供自己的程式離線讀取。欄位說明見[資料格式](docs/data-format.md)。
+下載本專案檔案後，可用自己的程式離線讀取 `roads/` 下的路檔。`road.csv` 是道路索引，用來找到對應檔案。讀取前請先看[資料格式](docs/data-format.md)，保留行政區代碼的前導零，並確認座標欄位與去重規則。
 
-既有查詢頁面使用 `address.html`、`address.js` 和行政區 CSV。在專案目錄執行 `python -m http.server` 後，開啟 [本機查詢頁面](http://localhost:8000/address.html)。頁面會讀取本機 CSV，但 jQuery 和 Bootstrap 仍從外部網站載入，需要網路。
+若要使用既有查詢頁面，在專案目錄啟動本機伺服器：
 
-政府資料公布日期與本專案執行下載的日期不同。`update_log.csv` 的 `last_updated` 是本機執行日期，不能代表政府資料產製日期。自動更新支援範圍與操作限制見[政府資料更新](docs/automated-update.md)。
+```bash
+python -m http.server
+```
 
-## 資料來源與限制
+開啟[本機查詢頁面](http://localhost:8000/address.html)。頁面使用 `address.html`、`address.js` 與本機 CSV，不會更新門牌資料。jQuery 和 Bootstrap 從外部網站載入，因此頁面仍需要網路。
 
-資料來自政府開放資料集。目前路檔涵蓋 22 個縣市，更新器支援其中 18 個縣市。宜蘭縣、南投縣、連江縣與嘉義市的路檔不經過更新器。其中宜蘭縣與南投縣的缺字，以 `scripts/fix_static_roads.py` 直接修正路檔。支援清單見[政府資料更新](docs/automated-update.md)。
+## 資料範圍與限制
 
-輸出 `X` 是經度，`Y` 是緯度，固定為小數 9 位。更新器預設來源座標為 EPSG:3826。澎湖縣與金門縣的來源使用 119 度分帶，設定為 EPSG:3825。
+截至 2026-10-14，本機道路索引涵蓋 22 個縣市，更新器設定其中 18 個縣市。宜蘭縣、南投縣、連江縣與嘉義市的既有路檔不經過更新器。各縣市來源與維護方式見[政府資料更新](docs/automated-update.md)。
 
-政府匯出檔會把系統無法儲存的字寫成「?」「■」或「？」。本專案以 `char_fixes.csv` 還原這些字，並以 `rare_chars.csv` 統一罕用字的字碼。輸出使用標準 Unicode，部分字在擴充 B 區，例如「𨻶」，有些字型無法顯示。規則見[資料格式](docs/data-format.md)。
+使用資料時，請注意：
 
-更新會重建縣市路檔。新路檔先寫到暫存目錄，全部寫完才替換舊檔，替換失敗時會還原舊檔。檢查與限制見政府資料更新說明。每個門牌只保留一列，規則見[資料格式](docs/data-format.md)。目前限制請先看[已知問題](docs/known-issues.md)。
+- 輸出 `X` 是經度，`Y` 是緯度。小數位數不代表定位精度，也不能證明每筆座標正確。
+- 程式依門牌欄位與距離去重，仍可能保留同號多列。不要把地址文字當成已驗證的唯一識別值。
+- 缺字修正依對照表套用。未列入對照的字元可能保留，部分罕用字也可能因字型而無法顯示。
+- `update_log.csv` 的 `last_updated` 是本機執行日期，不是政府資料產製日期。
 
-`taiwan-lvr-geodata` 寫入的更新暫不處理。既有 `supplements/` 與[相關文件](docs/supplements.md)先保留，不屬於目前政府資料更新步驟。
+欄位與處理規則以[資料格式](docs/data-format.md)為準。資料品質及更新中斷等限制見[已知問題](docs/known-issues.md)。
 
-## 文件
+## 維護與文件
 
-- [資料格式](docs/data-format.md)
-- [政府資料更新](docs/automated-update.md)
-- [已知問題](docs/known-issues.md)
-- [文件整理紀錄](docs/records/2026-10-12-文件整理.md)
-- [新竹、澎湖、金門重跑紀錄](docs/records/2026-10-13-新竹澎湖金門重跑.md)
-- [缺字還原紀錄](docs/records/2026-10-13-缺字還原.md)
-- [全縣市缺字紀錄](docs/records/2026-10-13-全縣市缺字.md)
-- [門牌與村里紀錄](docs/records/2026-10-14-門牌與村里.md)
+更新會改寫路檔、道路索引及更新紀錄。執行前請閱讀[政府資料更新](docs/automated-update.md)，確認命令的連線、寫檔及失敗影響。
+
+來自 `taiwan-lvr-geodata` 的補充匯入目前暫停。`supplements/` 與相關程式保留，狀態及重新啟用前的條件見[地址補充層](docs/supplements.md)。
+
+| 文件 | 用途 |
+| --- | --- |
+| [資料格式](docs/data-format.md) | 解釋檔案、欄位與資料處理規則 |
+| [政府資料更新](docs/automated-update.md) | 說明本機更新、維護命令與 GitHub Actions |
+| [已知問題](docs/known-issues.md) | 說明影響範圍、既有證據與待確認事項 |
+| [地址補充層](docs/supplements.md) | 說明暫停的補充流程 |
+| [執行紀錄](docs/records/) | 保存各次操作、檢查與更正 |
+| [歷史文件](docs/archive/) | 保存已被取代的原文，不作現行操作依據 |
+
+歷史紀錄包括[文件整理](docs/records/2026-10-12-文件整理.md)、[新竹澎湖金門重跑](docs/records/2026-10-13-新竹澎湖金門重跑.md)、[缺字還原](docs/records/2026-10-13-缺字還原.md)、[全縣市缺字](docs/records/2026-10-13-全縣市缺字.md)與[門牌及村里處理](docs/records/2026-10-14-門牌與村里.md)。各項結果只代表紀錄所列的日期、版本與驗證範圍。
