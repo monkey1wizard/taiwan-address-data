@@ -157,3 +157,14 @@ class SortKeyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlateAreaTest(unittest.TestCase):
+    def test_plate_area_sets_area(self) -> None:
+        from update_addresses import apply_char_fixes
+        fixes = {("1001325", "plate_area", "||65號"): ""}
+        parts = {"village": "", "street": "", "lane": "", "alley": "",
+                 "number": "65號", "neighborhood": ""}
+        self.assertIn("plate_area", apply_char_fixes(fixes, "1001325", parts))
+        self.assertEqual(parts["area"], "")
+

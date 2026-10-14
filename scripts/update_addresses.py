@@ -499,6 +499,10 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
         if nei is not None and "neighborhood" in parts:
             parts["neighborhood"] = nei
             applied.append("neighborhood")
+        pa = _plate_get(fixes, tcode, "plate_area", full, tail)
+        if pa is not None:
+            parts["area"] = pa
+            applied.append("plate_area")
         ps = _plate_get(fixes, tcode, "plate_street", full, tail)
         if ps is not None:
             parts["street"] = ps
@@ -1016,7 +1020,8 @@ def run(cfg: CountyConfig) -> None:
                 tcode = parts.get("town", tcode)   # plate_town fix
                 # 地區 goes in front of the lane (after char_fixes, whose keys
                 # use the source lane value).
-                area = source_area(row, col, variants)
+                # A plate_area fix replaces the source 地區 value.
+                area = parts.get("area", source_area(row, col, variants))
                 if area:
                     lane = area + lane
             village = villages.get((tcode, village_name), tcode + "-000")
