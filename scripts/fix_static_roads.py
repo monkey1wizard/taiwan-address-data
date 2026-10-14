@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Apply char_fixes.csv and rare_chars.csv to counties that update_addresses.py
-does not produce (宜蘭縣 10002, 南投縣 10008, 臺中市 66).
+does not produce (宜蘭縣 10002, 南投縣 10008).
 
 Their roads/ files come from the 2016 import or a TGOS snapshot, so there is no
 government source to rerun. This script rewrites the tracked road files of one

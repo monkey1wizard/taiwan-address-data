@@ -112,11 +112,14 @@ class CharFixesTableTest(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         for r in self.rows:
             # "full_addr" is only applied by fix_static_roads.py.
-            self.assertIn(r["field"], FIX_FIELDS + ("full_addr", "number", "neighborhood", "drop"))
+            self.assertIn(r["field"], FIX_FIELDS + ("full_addr", "number", "neighborhood", "drop",
+                                             "plate_village", "plate_town"))
             self.assertTrue(r["evidence"] and r["checked_on"])
 
     def test_restored_characters_are_in_rare_chars(self) -> None:
         for r in self.rows:
+            if r["field"] in ("plate_town", "drop", "neighborhood"):
+                continue  # codes or row removal, not text with filled-in characters
             if "改寫" in r["evidence"]:
                 # The value was rewritten, not only a lost character filled in.
                 self.assertFalse(any(is_private_use(c) for c in r["fixed_value"]))

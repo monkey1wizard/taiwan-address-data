@@ -24,6 +24,7 @@ import re
 import ssl
 import sys
 import unicodedata
+from html.parser import HTMLParser
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,11 +71,13 @@ class CountyConfig:
     page_url: str | None = None   # HTML page to scrape for the latest data link
     page_re: str | None = None    # regex capturing the link href on page_url
     addr_col: str | None = None   # full-address column to parse (e.g. 新竹市 地址)
+    resolver: str | None = None   # special download: "taichung_drive" (list CSV -> Google Drive)
 
 
 # Standard Chinese-header layout (most counties)
 _ZH = dict(town="鄉鎮市區代碼", village="村里", nei="鄰", street="街路段",
-           lane="巷", alley="弄", number="號", x="橫座標", y="縱座標")
+           lane="巷", alley="弄", number="號", x="橫座標", y="縱座標",
+           area="地區")
 
 
 def _zh(**kw) -> dict[str, str]:
@@ -89,6 +92,7 @@ COLUMN_ALIASES = {
     "nei": ["鄰", "neighbor", "neighborhood"],
     "street": ["街路段", "街、路段", "街_路段", "街（路段）", "街(路段)", "街或路段",
                "street、road、section", "streetRoadSection", "street_road_section"],
+    "area": ["地區", "area"],
     "lane": ["巷", "lane"],
     "alley": ["弄", "alley"],
     "number": ["號", "number", "houseNumber", "號樓"],
@@ -104,16 +108,24 @@ COUNTIES = {
         "新北市", "65", 168887,
         columns=dict(town="areacode", village="village", nei="neighbor",
                      street="street、road、section", lane="lane", alley="alley",
-                     number="number", x="x_3826", y="y_3826"),
+                     number="number", x="x_3826", y="y_3826", area="area"),
         town_scheme="x10",
     ),
     "桃園市": CountyConfig("桃園市", "68", 157689, _ZH, domain="data.nat.gov.tw", pick="latest"),
-    # 臺中市 (66, 169806) already maintained by a separate script
+    # 臺中市: dataset 169806 is only probed for its modifiedDate; the file itself
+    # is a Google Drive link listed in the city's open-data resource CSV.
+    "臺中市": CountyConfig(
+        "臺中市", "66", 169806,
+        columns=dict(town="鄉鎮市區代碼", village="村里", nei="鄰",
+                     street="街、路段", area="地區", lane="巷", alley="弄",
+                     number="號", x="TWD97橫坐標", y="TWD97縱坐標"),
+        resolver="taichung_drive"),
     "臺南市": CountyConfig(
         "臺南市", "67", 120044,
         columns=dict(town="地址-行政區域代碼", village="村里", nei="鄰",
-                     street="街路段", lane="巷", alley="弄",
+                     street="街路段", area="地區", lane="巷", alley="弄",
                      number="號", x="橫座標[E 坐標]", y="縱座標[N 坐標]"),
+        pick="latest",
     ),
     "高雄市": CountyConfig("高雄市", "64", 172400, _ZH, pick="latest"),
 
@@ -151,7 +163,7 @@ COUNTIES = {
     "基隆市": CountyConfig(
         "基隆市", "10017", None,
         columns=dict(town="鄉鎮市區", village="村里", nei="鄰",
-                     street="街、路段", lane="巷", alley="弄",
+                     street="街、路段", area="地區", lane="巷", alley="弄",
                      number="號", x="橫座標", y="縱座標"),
         town_scheme="name",
         page_url="https://www.klcg.gov.tw/tw/civil/2209-292163.html",
@@ -453,7 +465,10 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
     A "number" fix belongs to one door plate, so its key is street + lane +
     alley + number and it only changes the number part. A "neighborhood" fix
     uses the same key, taken before the number is fixed. A "drop" fix with
-    that key marks the whole row for removal and returns "drop"."""
+    that key marks the whole row for removal and returns "drop". A
+    "plate_village" fix (same key) replaces parts["village"]. A "plate_town"
+    fix (same key, value = 7-digit town code) stores the new code in
+    parts["town"]; the lookups here always use the original town code."""
     applied = []
     for fld in FIX_FIELDS:
         new = fixes.get((tcode, fld, parts[fld]))
@@ -464,6 +479,14 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
         prefix = parts["street"] + parts["lane"] + parts.get("alley", "")
         if (tcode, "drop", prefix + parts["number"]) in fixes:
             return applied + ["drop"]
+        pv = fixes.get((tcode, "plate_village", prefix + parts["number"]))
+        if pv is not None:
+            parts["village"] = pv
+            applied.append("plate_village")
+        pt = fixes.get((tcode, "plate_town", prefix + parts["number"]))
+        if pt is not None:
+            parts["town"] = pt
+            applied.append("plate_town")
         nei = fixes.get((tcode, "neighborhood", prefix + parts["number"]))
         if nei is not None and "neighborhood" in parts:
             parts["neighborhood"] = nei
@@ -498,6 +521,16 @@ def source_fields(row: dict, col: dict, cfg: CountyConfig, name_to_code: dict,
             normalize(vb("lane")), normalize(v("alley")), normalize(v("number")))
 
 
+def source_area(row: dict, col: dict, variants: dict[str, str]) -> str:
+    """The 地區 value of one source row (locality or lane-like name), or "" when
+    the source has no such column. run() puts it in front of the lane."""
+    name = col.get("area")
+    if not name:
+        return ""
+    raw = apply_variants(row.get(name) or "", variants)
+    return normalize_bracketed(unicodedata.normalize("NFC", raw)).strip()
+
+
 # ── Dataset resolution / download ──────────────────────────────────────────────
 
 def _dist_sort_key(d: dict) -> tuple[int, int]:
@@ -506,6 +539,9 @@ def _dist_sort_key(d: dict) -> tuple[int, int]:
     m = re.search(r"(\d+)年(\d+)月", desc)
     if m:
         return (int(m.group(1)), int(m.group(2)))
+    m = re.search(r"(\d+)年", desc)   # year only (臺南): month 0
+    if m:
+        return (int(m.group(1)), 0)
     qc = str(d.get("resourceQualityCheckTime") or "")
     m2 = re.search(r"(\d{4})-(\d{2})", qc)
     if m2:
@@ -694,8 +730,45 @@ def get_download_urls(cfg: CountyConfig, s) -> list[str]:
     raise RuntimeError(f"no {want} resource for dataset {cfg.dataset_id} ({last})")
 
 
+TAICHUNG_LIST_URL = ("https://newdatacenter.taichung.gov.tw/api/v1/no-auth/"
+                     "resource.download?rid=42350484-812f-4c08-a06f-45783904fe88")
+_TAICHUNG_NAME_RE = re.compile(r"臺中市(\d+)年(\d+)月GIS門牌號碼")
+_DRIVE_ID_RE = re.compile(r"/file/d/([A-Za-z0-9_-]+)")
+GDRIVE_PREFIX = "gdrive:"
+
+
+def parse_taichung_list(text: str) -> tuple[str, tuple[int, int], int]:
+    """From the city's resource-list CSV text, return (Drive file id, (year,
+    month), list row count) of the newest 臺中市NNN年MM月GIS門牌號碼 row."""
+    text = text.lstrip("\ufeff")   # the file starts with several BOMs
+    rows = list(csv.DictReader(io.StringIO(text)))
+    best = None
+    for r in rows:
+        r = {(k or "").strip().lstrip("\ufeff"): v for k, v in r.items()}
+        m = _TAICHUNG_NAME_RE.search(r.get("檔案名稱") or "")
+        d = _DRIVE_ID_RE.search(r.get("地圖網址") or "")
+        if m and d:
+            key = (int(m.group(1)), int(m.group(2)))
+            if best is None or key > best[0]:
+                best = (key, d.group(1))
+    if best is None:
+        raise RuntimeError("no 臺中市..GIS門牌號碼 row with a Google Drive link")
+    return best[1], best[0], len(rows)
+
+
+def resolve_taichung_drive(s) -> list[str]:
+    r = s.get(TAICHUNG_LIST_URL, timeout=60)
+    r.raise_for_status()
+    file_id, (year, month), n = parse_taichung_list(r.content.decode("utf-8", "replace"))
+    print(f"  臺中市 list: {n} rows, newest {year}年{month}月, Drive id {file_id}")
+    return [GDRIVE_PREFIX + file_id]
+
+
 def resolve_sources(cfg: CountyConfig, s) -> list[str]:
-    """Return the download URL(s) for a county, honoring url / page_url / API."""
+    """Return the download URL(s) for a county, honoring url / page_url / API.
+    A "gdrive:<id>" entry is a Google Drive file handled by download_google_drive."""
+    if cfg.resolver == "taichung_drive":
+        return resolve_taichung_drive(s)
     if cfg.url:
         return [cfg.url]
     if cfg.page_url:
@@ -714,6 +787,59 @@ def download_bytes(url: str, s) -> bytes:
     print(f"Downloading:\n  {url}")
     r = s.get(url, timeout=600, stream=True)
     r.raise_for_status()
+    chunks, total = [], 0
+    for chunk in r.iter_content(chunk_size=1024 * 1024):
+        chunks.append(chunk)
+        total += len(chunk)
+        print(f"\r  {total/1024/1024:.1f} MB", end="", flush=True)
+    print()
+    return b"".join(chunks)
+
+
+class _DriveFormParser(HTMLParser):
+    """Collects the action and hidden inputs of <form id="download-form">."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.action: str | None = None
+        self.inputs: dict[str, str] = {}
+        self._in_form = False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "form" and a.get("id") == "download-form":
+            self._in_form = True
+            self.action = a.get("action")
+        elif tag == "input" and self._in_form and a.get("name"):
+            self.inputs[a["name"]] = a.get("value") or ""
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self._in_form = False
+
+
+def parse_drive_confirm(html: str) -> tuple[str, dict[str, str]]:
+    """(action URL, params) of Google Drive's virus-scan confirm page."""
+    p = _DriveFormParser()
+    p.feed(html)
+    if not p.action:
+        raise RuntimeError("Google Drive confirm page has no download-form")
+    return p.action, p.inputs
+
+
+def download_google_drive(file_id: str, s) -> bytes:
+    print(f"Downloading Google Drive file:\n  {file_id}")
+    r = s.get("https://drive.google.com/uc",
+              params={"export": "download", "id": file_id},
+              timeout=600, stream=True)
+    r.raise_for_status()
+    if r.headers.get("Content-Type", "").startswith("text/html"):
+        action, params = parse_drive_confirm(r.text)
+        r.close()
+        r = s.get(action, params=params, timeout=600, stream=True)
+        r.raise_for_status()
+        if r.headers.get("Content-Type", "").startswith("text/html"):
+            raise RuntimeError("Google Drive returned a page instead of the file")
     chunks, total = [], 0
     for chunk in r.iter_content(chunk_size=1024 * 1024):
         chunks.append(chunk)
@@ -772,7 +898,8 @@ def load_rows(cfg: CountyConfig, s) -> list[dict]:
         urls = urls[:1]
     rows: list[dict] = []
     for url in urls:
-        raw = download_bytes(url, s)
+        raw = (download_google_drive(url[len(GDRIVE_PREFIX):], s)
+               if url.startswith(GDRIVE_PREFIX) else download_bytes(url, s))
         rows.extend(read_xlsx_rows(raw) if cfg.fmt == "xlsx"
                     else read_csv_rows(raw))
     if len(urls) > 1:
@@ -864,6 +991,12 @@ def run(cfg: CountyConfig) -> None:
                 village_name, street, lane, number, neighborhood = (
                     parts["village"], parts["street"], parts["lane"], parts["number"],
                     parts["neighborhood"])
+                tcode = parts.get("town", tcode)   # plate_town fix
+                # 地區 goes in front of the lane (after char_fixes, whose keys
+                # use the source lane value).
+                area = source_area(row, col, variants)
+                if area:
+                    lane = area + lane
             village = villages.get((tcode, village_name), tcode + "-000")
 
             if cfg.addr_col:
@@ -876,6 +1009,7 @@ def run(cfg: CountyConfig) -> None:
                     fixed[fld] += 1
                 village_name, lane, number, neighborhood = (
                     parts["village"], parts["lane"], parts["number"], parts["neighborhood"])
+                tcode = parts.get("town", tcode)   # plate_town fix
                 road, section = split_section(parts["street"])
                 village = villages.get((tcode, village_name), tcode + "-000")
             else:

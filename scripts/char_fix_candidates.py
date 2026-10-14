@@ -60,7 +60,6 @@ LEGACY_RADIUS_M = 10
 STATIC_COUNTIES = {
     "宜蘭縣": ua.CountyConfig("宜蘭縣", "10002", None, {}),
     "南投縣": ua.CountyConfig("南投縣", "10008", None, {}),
-    "臺中市": ua.CountyConfig("臺中市", "66", None, {}),
 }
 # NLSC county letters (api.nlsc.gov.tw/other/ListCounty)
 NLSC_LETTER = {
