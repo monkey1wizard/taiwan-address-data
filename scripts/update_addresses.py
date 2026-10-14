@@ -468,7 +468,13 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
     that key marks the whole row for removal and returns "drop". A
     "plate_village" fix (same key) replaces parts["village"]. A "plate_town"
     fix (same key, value = 7-digit town code) stores the new code in
-    parts["town"]; the lookups here always use the original town code."""
+    parts["town"]; the lookups here always use the original town code.
+    A "plate_street" fix (same key) replaces parts["street"] (road plus
+    section text).
+
+    A per-door-plate key may also be qualified as village|neighborhood|tail
+    (values taken before any plate fix). It is tried first; the tail-only key
+    is the fallback."""
     applied = []
     for fld in FIX_FIELDS:
         new = fixes.get((tcode, fld, parts[fld]))
@@ -477,25 +483,41 @@ def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
             applied.append(fld)
     if "number" in parts:
         prefix = parts["street"] + parts["lane"] + parts.get("alley", "")
-        if (tcode, "drop", prefix + parts["number"]) in fixes:
+        tail = prefix + parts["number"]
+        full = parts["village"] + "|" + parts.get("neighborhood", "") + "|" + tail
+        if _plate_get(fixes, tcode, "drop", full, tail) is not None:
             return applied + ["drop"]
-        pv = fixes.get((tcode, "plate_village", prefix + parts["number"]))
+        pv = _plate_get(fixes, tcode, "plate_village", full, tail)
         if pv is not None:
             parts["village"] = pv
             applied.append("plate_village")
-        pt = fixes.get((tcode, "plate_town", prefix + parts["number"]))
+        pt = _plate_get(fixes, tcode, "plate_town", full, tail)
         if pt is not None:
             parts["town"] = pt
             applied.append("plate_town")
-        nei = fixes.get((tcode, "neighborhood", prefix + parts["number"]))
+        nei = _plate_get(fixes, tcode, "neighborhood", full, tail)
         if nei is not None and "neighborhood" in parts:
             parts["neighborhood"] = nei
             applied.append("neighborhood")
-        new = fixes.get((tcode, "number", prefix + parts["number"]))
+        ps = _plate_get(fixes, tcode, "plate_street", full, tail)
+        if ps is not None:
+            parts["street"] = ps
+            applied.append("plate_street")
+        new = _plate_get(fixes, tcode, "number", full, tail)
         if new is not None and new.startswith(prefix):
             parts["number"] = new[len(prefix):]
             applied.append("number")
     return applied
+
+
+def _plate_get(fixes: dict[tuple[str, str, str], str], tcode: str, field: str,
+               full: str, tail: str) -> str | None:
+    """Value of a per-door-plate fix: the qualified key if present, else the
+    tail-only key, else None."""
+    new = fixes.get((tcode, field, full))
+    if new is None:
+        new = fixes.get((tcode, field, tail))
+    return new
 
 
 _BRACKETED_RE = re.compile(

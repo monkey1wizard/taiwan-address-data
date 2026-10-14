@@ -95,6 +95,55 @@ class PlateFixTest(unittest.TestCase):
         self.assertNotIn("town", other)
 
 
+class QualifiedPlateKeyTest(unittest.TestCase):
+    """Synthetic fixes only. Keys: village|neighborhood|street+lane+alley+number."""
+
+    def test_qualified_key_needs_matching_village_and_neighborhood(self) -> None:
+        fixes = {("6600100", "plate_village", "|6鄰|1號"): "北村"}
+        match = {"village": "", "street": "", "lane": "", "alley": "",
+                 "number": "1號", "neighborhood": "6鄰"}
+        self.assertEqual(apply_char_fixes(fixes, "6600100", match), ["plate_village"])
+        self.assertEqual(match["village"], "北村")
+        other_village = {"village": "東村", "street": "", "lane": "", "alley": "",
+                         "number": "1號", "neighborhood": "6鄰"}
+        self.assertEqual(apply_char_fixes(fixes, "6600100", other_village), [])
+        self.assertEqual(other_village["village"], "東村")
+        other_nei = {"village": "", "street": "", "lane": "", "alley": "",
+                     "number": "1號", "neighborhood": "7鄰"}
+        self.assertEqual(apply_char_fixes(fixes, "6600100", other_nei), [])
+        self.assertEqual(other_nei["village"], "")
+
+    def test_tail_key_applies_regardless_of_village_and_neighborhood(self) -> None:
+        fixes = {("6600100", "plate_village", "信義路41號"): "新里"}
+        for village, nei in (("", ""), ("東村", "3鄰")):
+            parts = {"village": village, "street": "信義路", "lane": "", "alley": "",
+                     "number": "41號", "neighborhood": nei}
+            self.assertEqual(apply_char_fixes(fixes, "6600100", parts), ["plate_village"])
+            self.assertEqual(parts["village"], "新里")
+
+    def test_plate_street_qualified_key(self) -> None:
+        fixes = {("6600100", "plate_street", "||65號"): "嘉和路"}
+        parts = {"village": "", "street": "", "lane": "", "alley": "",
+                 "number": "65號", "neighborhood": ""}
+        applied = apply_char_fixes(fixes, "6600100", parts)
+        self.assertEqual(parts["street"], "嘉和路")
+        self.assertIn("plate_street", applied)
+
+    def test_full_key_wins_over_tail_key(self) -> None:
+        fixes = {("6600100", "plate_street", "信義路41號"): "甲路",
+                 ("6600100", "plate_street", "|6鄰|信義路41號"): "乙路"}
+        parts = {"village": "", "street": "信義路", "lane": "", "alley": "",
+                 "number": "41號", "neighborhood": "6鄰"}
+        applied = apply_char_fixes(fixes, "6600100", parts)
+        self.assertEqual(parts["street"], "乙路")
+        self.assertEqual(applied.count("plate_street"), 1)
+        # Without the qualifying neighborhood, the tail key applies.
+        plain = {"village": "", "street": "信義路", "lane": "", "alley": "",
+                 "number": "41號", "neighborhood": "7鄰"}
+        apply_char_fixes(fixes, "6600100", plain)
+        self.assertEqual(plain["street"], "甲路")
+
+
 class SortKeyTest(unittest.TestCase):
     def test_tainan_year_only(self) -> None:
         self.assertGreater(_dist_sort_key({"resourceDescription": "114年臺南市門牌坐標資料"}),
