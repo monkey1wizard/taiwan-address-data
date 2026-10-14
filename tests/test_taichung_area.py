@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from update_addresses import (
-    COUNTIES, _dist_sort_key, apply_char_fixes, parse_drive_confirm,
+    COUNTIES, _dist_sort_key, apply_area_fix, apply_char_fixes, parse_drive_confirm,
     parse_taichung_list, source_area,
 )
 
@@ -70,6 +70,19 @@ class AreaTest(unittest.TestCase):
     def test_missing_column(self) -> None:
         self.assertEqual(source_area({}, {}, {}), "")
         self.assertEqual(source_area({"x": "1"}, {"area": "地區"}, {}), "")
+
+    def test_area_fix_replaces_listed_value(self) -> None:
+        fixes = {("6600100", "area", "西埔"): "西浦"}
+        self.assertEqual(apply_area_fix(fixes, "6600100", "西埔"), ("西浦", True))
+
+    def test_area_fix_leaves_unlisted_value(self) -> None:
+        fixes = {("6600100", "area", "西埔"): "西浦"}
+        self.assertEqual(apply_area_fix(fixes, "6600100", "東埔"), ("東埔", False))
+        self.assertEqual(apply_area_fix(fixes, "6600100", ""), ("", False))
+
+    def test_area_fix_is_per_town(self) -> None:
+        fixes = {("6600100", "area", "西埔"): "西浦"}
+        self.assertEqual(apply_area_fix(fixes, "6600200", "西埔"), ("西埔", False))
 
     def test_brackets_stripped(self) -> None:
         self.assertEqual(source_area({"地區": " (磘)仔 "}, self.COL, {}), "磘仔")

@@ -456,6 +456,16 @@ def load_char_fixes(code: str, path: Path = CHAR_FIXES_CSV) -> dict[tuple[str, s
     return out
 
 
+def apply_area_fix(fixes: dict[tuple[str, str, str], str], tcode: str,
+                   area: str) -> tuple[str, bool]:
+    """(地區 value, whether an "area" fix replaced it). Keyed on the original
+    town code and the source 地區 value; an empty value is never fixed."""
+    new = fixes.get((tcode, "area", area)) if area else None
+    if new is None:
+        return area, False
+    return new, True
+
+
 def apply_char_fixes(fixes: dict[tuple[str, str, str], str], tcode: str,
                      parts: dict[str, str]) -> list[str]:
     """Replace village/street/lane values listed in char_fixes.csv for this
@@ -1009,6 +1019,7 @@ def run(cfg: CountyConfig) -> None:
             else:
                 tcode, village_name, street, lane, alley, number = source_fields(
                     row, col, cfg, name_to_code, variants)
+                orig_tcode = tcode   # char-fix keys use the source town code
                 parts = {"village": village_name, "street": street, "lane": lane,
                          "alley": alley, "number": number, "neighborhood": neighborhood}
                 applied = apply_char_fixes(fixes, tcode, parts)
@@ -1020,8 +1031,15 @@ def run(cfg: CountyConfig) -> None:
                 tcode = parts.get("town", tcode)   # plate_town fix
                 # 地區 goes in front of the lane (after char_fixes, whose keys
                 # use the source lane value).
-                # A plate_area fix replaces the source 地區 value.
-                area = parts.get("area", source_area(row, col, variants))
+                # A plate_area fix replaces the source 地區 value; otherwise an
+                # "area" fix on the source value does.
+                if "area" in parts:
+                    area = parts["area"]
+                else:
+                    area, hit = apply_area_fix(
+                        fixes, orig_tcode, source_area(row, col, variants))
+                    if hit:
+                        fixed["area"] += 1
                 if area:
                     lane = area + lane
             village = villages.get((tcode, village_name), tcode + "-000")

@@ -113,7 +113,7 @@ class CharFixesTableTest(unittest.TestCase):
         for r in self.rows:
             # "full_addr" is only applied by fix_static_roads.py.
             self.assertIn(r["field"], FIX_FIELDS + ("full_addr", "number", "neighborhood", "drop", "plate_area",
-                                             "plate_village", "plate_town", "plate_street"))
+                                             "plate_village", "plate_town", "plate_street", "area"))
             self.assertTrue(r["evidence"] and r["checked_on"])
 
     def test_restored_characters_are_in_rare_chars(self) -> None:
