@@ -40,8 +40,10 @@ jobs:
         continue-on-error: true
         run: python scripts/update_addresses.py --updated-only
 
+      # Commit only when every selected county succeeded. A partial run is
+      # discarded. The next run retries it.
       - name: Check for changes
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        if: ${{ github.event.inputs.dry_run != 'true' && steps.run_update.outcome == 'success' }}
         id: diff
         run: |
           git add -A
@@ -79,7 +81,7 @@ jobs:
           {
             echo "模式: $MODE"
             echo "updater 執行結果: ${UPDATE_OUTCOME:-(dry-run 跳過)}"
-            echo "是否有 commit 推送: ${PUSHED:-n/a}"
+            echo "是否有資料變更要提交: ${PUSHED:-n/a（dry-run 或 updater 失敗，不提交）}"
             echo
             echo "### 本次選中的縣市"
             echo '```'
