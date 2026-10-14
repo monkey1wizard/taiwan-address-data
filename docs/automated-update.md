@@ -106,7 +106,7 @@ python -m unittest discover -s tests
 
 設定位於 [monthly-update.yml](../.github/workflows/monthly-update.yml) 與 [keepalive.yml](../.github/workflows/keepalive.yml)。每月更新 workflow 設定在每月 5 日執行，並可手動觸發。排程是否準時執行依賴 GitHub Actions。本文件沒有查證 GitHub 目前的排程政策或執行限制。
 
-workflow 先執行 `--updated-only --dry-run`，記下預計更新的縣市。若手動執行時勾選 `dry_run`，會跳過正式更新及提交，但仍會嘗試建立摘要 Issue。沒有勾選時，才會執行 `--updated-only`。正式更新會重新查詢，因此可能與前一步列出的縣市不同。
+workflow 先執行 `--updated-only --dry-run`，記下預計更新的縣市。若手動執行時勾選 `dry_run`，會跳過正式更新及提交，但仍會嘗試建立摘要 Issue。沒有勾選時，才會執行 `--updated-only`。手動執行時若在 `county` 填入縣市名稱，例如臺中市，正式更新只跑該縣市，不看來源是否較新。前面的 dry-run 選取步驟仍照常執行，摘要的縣市清單不代表實際更新的縣市。正式更新會重新查詢，因此可能與前一步列出的縣市不同。
 
 更新步驟設為 `continue-on-error`，讓摘要 Issue 仍會建立。只要有一個縣市失敗，更新器就以非零結束碼退出，workflow 不檢查差異也不提交，已完成縣市的成果一併捨棄，下次執行再重試。最後一步會使工作標示失敗。
 

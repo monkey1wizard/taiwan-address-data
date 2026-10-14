@@ -10,6 +10,10 @@ on:
         description: "只印會更新哪些縣市，不下載不寫檔"
         type: boolean
         default: false
+      county:
+        description: "只更新這個縣市，例如 臺中市。留空則只更新來源較新的縣市"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -38,7 +42,14 @@ jobs:
         if: ${{ github.event.inputs.dry_run != 'true' }}
         id: run_update
         continue-on-error: true
-        run: python scripts/update_addresses.py --updated-only
+        env:
+          COUNTY: ${{ github.event.inputs.county }}
+        run: |
+          if [ -n "$COUNTY" ]; then
+            python scripts/update_addresses.py "$COUNTY"
+          else
+            python scripts/update_addresses.py --updated-only
+          fi
 
       # Commit only when every selected county succeeded. A partial run is
       # discarded. The next run retries it.
@@ -77,9 +88,11 @@ jobs:
           MODE: ${{ github.event.inputs.dry_run == 'true' && 'dry-run' || 'full run' }}
           UPDATE_OUTCOME: ${{ steps.run_update.outcome }}
           PUSHED: ${{ steps.diff.outputs.changed }}
+          COUNTY: ${{ github.event.inputs.county }}
         run: |
           {
             echo "模式: $MODE"
+            echo "指定縣市: ${COUNTY:-（未指定）}"
             echo "updater 執行結果: ${UPDATE_OUTCOME:-(dry-run 跳過)}"
             echo "是否有資料變更要提交: ${PUSHED:-n/a（dry-run 或 updater 失敗，不提交）}"
             echo
